@@ -4,16 +4,17 @@
     "slug": "EditedRoute",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/app-icon.png",
     "scheme": "editedroute",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.kirills.editedroute",
+      "icon": "./assets/images/app-icon.png",
       "associatedDomains": [
         "applinks:willing-unicorn-16.clerk.accounts.dev",
-         "webcredentials:willing-unicorn-16.clerk.accounts.dev"
+        "webcredentials:willing-unicorn-16.clerk.accounts.dev"
       ],
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "This app uses your location to show you relevant routes and places nearby.",
@@ -21,6 +22,7 @@
       }
     },
     "android": {
+      "icon": "./assets/images/app-icon.png",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -33,29 +35,39 @@
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/app-icon.png"
     },
     "plugins": [
       "expo-router",
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
+          "image": "./assets/images/app-icon.png",
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#ffffff",
           "dark": {
+            "image": "./assets/images/app-icon.png",
             "backgroundColor": "#000000"
           }
         }
       ],
       "expo-secure-store",
-      ["expo-build-properties", {
-        "ios": {
-          "deploymentTarget": "16.0"
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "deploymentTarget": "16.0"
+          }
         }
-      }],
-      "expo-web-browser"
+      ],
+      "expo-web-browser",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "The app accesses your photos to let you update your profile picture."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

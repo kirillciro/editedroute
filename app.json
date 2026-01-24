@@ -2,7 +2,7 @@
   "expo": {
     "name": "EditedRoute",
     "slug": "EditedRoute",
-    "version": "1.0.0",
+    "version": "32.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/app-icon.png",
     "scheme": "editedroute",
@@ -11,6 +11,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.kirills.editedroute",
+      "buildNumber": "32",
       "icon": "./assets/images/app-icon.png",
       "associatedDomains": [
         "applinks:willing-unicorn-16.clerk.accounts.dev",
@@ -18,20 +19,29 @@
       ],
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "This app uses your location to show you relevant routes and places nearby.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "This app uses your location to provide turn-by-turn navigation and track your delivery route.",
+        "NSMotionUsageDescription": "We use motion sensors for smooth navigation and accurate direction tracking during your route.",
         "UIBackgroundModes": ["location", "fetch"]
+      },
+      "config": {
+        "googleMapsApiKey": "AIzaSyAmRHr2EKOelTqx4HZbmyxPrXnUk1zvbII"
       }
     },
     "android": {
-      "icon": "./assets/images/app-icon.png",
+      "icon": "./assets/images/editedroute-android.png",
+      "permissions": ["ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION"],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "foregroundImage": "./assets/images/editedroute-android.png"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "package": "com.kirills.editedroute"
+      "package": "com.kirills.editedroute",
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyAmRHr2EKOelTqx4HZbmyxPrXnUk1zvbII"
+        }
+      }
     },
     "web": {
       "output": "static",
@@ -40,38 +50,20 @@
     "plugins": [
       "expo-router",
       [
-        "expo-splash-screen",
-        {
-          "image": "./assets/images/app-icon.png",
-          "imageWidth": 200,
-          "resizeMode": "contain",
-          "backgroundColor": "#ffffff",
-          "dark": {
-            "image": "./assets/images/app-icon.png",
-            "backgroundColor": "#000000"
-          }
-        }
-      ],
-      "expo-secure-store",
-      [
         "expo-build-properties",
         {
           "ios": {
             "deploymentTarget": "16.0"
           }
         }
-      ],
-      "expo-web-browser",
-      [
-        "expo-image-picker",
-        {
-          "photosPermission": "The app accesses your photos to let you update your profile picture."
-        }
       ]
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "clerkPublishableKey": "pk_test_d2lsbGluZy11bmljb3JuLTE2LmNsZXJrLmFjY291bnRzLmRldiQ"
     }
   }
 }

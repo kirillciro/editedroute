@@ -16,6 +16,7 @@ type ThemeContextType = {
     textSecondary: string;
     border: string;
     primary: string;
+    isDark: boolean;
   };
 };
 
@@ -37,6 +38,7 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
         textSecondary: "rgba(255, 255, 255, 0.6)",
         border: "rgba(255, 255, 255, 0.2)",
         primary: Primary,
+        isDark: true,
       }
     : {
         bg: White,
@@ -46,6 +48,7 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
         textSecondary: "rgba(0, 0, 0, 0.6)",
         border: "rgba(0, 0, 0, 0.25)",
         primary: Primary,
+        isDark: false,
       };
 
   return (

@@ -1,0 +1,342 @@
+import { useRef, useState } from "react";
+import * as Location from "expo-location";
+import { AnimatedRegion } from "react-native-maps";
+import { LatLng } from "@/types/navigation";
+
+interface LocationTrackingConfig {
+  enablePolylineSnapping?: boolean;
+  polylineSnapDistance?: number; // meters
+  enableNoiseFiltering?: boolean;
+  smoothingDuration?: number; // milliseconds
+  enableCameraLookAhead?: boolean;
+  lookAheadDistance?: number; // meters
+}
+
+interface LocationTrackingResult {
+  location: AnimatedRegion | null;
+  rawLocation: LatLng | null;
+  heading: number;
+  speed: number; // m/s
+  accuracy: number;
+  isTracking: boolean;
+  error: string | null;
+  startTracking: () => Promise<void>;
+  stopTracking: () => void;
+}
+
+const DEFAULT_CONFIG: LocationTrackingConfig = {
+  enablePolylineSnapping: true,
+  polylineSnapDistance: 50,
+  enableNoiseFiltering: true,
+  smoothingDuration: 400,
+  enableCameraLookAhead: true,
+  lookAheadDistance: 100,
+};
+
+/**
+ * Advanced GPS tracking hook with AnimatedRegion, polyline snapping,
+ * noise filtering, and camera look-ahead
+ */
+export function useLocationTracking(
+  routePolyline?: LatLng[],
+  config: LocationTrackingConfig = {},
+): LocationTrackingResult {
+  const finalConfig = { ...DEFAULT_CONFIG, ...config };
+
+  const [isTracking, setIsTracking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [rawLocation, setRawLocation] = useState<LatLng | null>(null);
+  const [heading, setHeading] = useState(0);
+  const [speed, setSpeed] = useState(0);
+  const [accuracy, setAccuracy] = useState(0);
+
+  const animatedRegion = useRef<AnimatedRegion | null>(null);
+  const locationSubscription = useRef<Location.LocationSubscription | null>(
+    null,
+  );
+  const previousLocation = useRef<LatLng | null>(null);
+
+  // Kalman filter state for noise reduction
+  const kalmanState = useRef({
+    lat: 0,
+    lng: 0,
+    variance: 0.1,
+  });
+
+  /**
+   * Calculate distance between two coordinates (Haversine formula)
+   */
+  const calculateDistance = (coord1: LatLng, coord2: LatLng): number => {
+    const R = 6371e3; // Earth radius in meters
+    const φ1 = (coord1.latitude * Math.PI) / 180;
+    const φ2 = (coord2.latitude * Math.PI) / 180;
+    const Δφ = ((coord2.latitude - coord1.latitude) * Math.PI) / 180;
+    const Δλ = ((coord2.longitude - coord1.longitude) * Math.PI) / 180;
+
+    const a =
+      Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+      Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+    return R * c;
+  };
+
+  /**
+   * Snap location to nearest point on route polyline
+   */
+  const snapToPolyline = (location: LatLng): LatLng => {
+    if (
+      !routePolyline ||
+      routePolyline.length < 2 ||
+      !finalConfig.enablePolylineSnapping
+    ) {
+      return location;
+    }
+
+    let closestPoint = location;
+    let minDistance = Infinity;
+
+    // Find closest point on polyline segments
+    for (let i = 0; i < routePolyline.length - 1; i++) {
+      const segmentStart = routePolyline[i];
+      const segmentEnd = routePolyline[i + 1];
+
+      const projectedPoint = projectPointOnSegment(
+        location,
+        segmentStart,
+        segmentEnd,
+      );
+      const distance = calculateDistance(location, projectedPoint);
+
+      if (distance < minDistance) {
+        minDistance = distance;
+        closestPoint = projectedPoint;
+      }
+    }
+
+    // Only snap if within threshold
+    if (minDistance <= (finalConfig.polylineSnapDistance || 50)) {
+      return closestPoint;
+    }
+
+    return location;
+  };
+
+  /**
+   * Project point onto line segment
+   */
+  const projectPointOnSegment = (
+    point: LatLng,
+    segmentStart: LatLng,
+    segmentEnd: LatLng,
+  ): LatLng => {
+    const x = point.longitude;
+    const y = point.latitude;
+    const x1 = segmentStart.longitude;
+    const y1 = segmentStart.latitude;
+    const x2 = segmentEnd.longitude;
+    const y2 = segmentEnd.latitude;
+
+    const A = x - x1;
+    const B = y - y1;
+    const C = x2 - x1;
+    const D = y2 - y1;
+
+    const dot = A * C + B * D;
+    const lenSq = C * C + D * D;
+    let param = -1;
+
+    if (lenSq !== 0) {
+      param = dot / lenSq;
+    }
+
+    let xx, yy;
+
+    if (param < 0) {
+      xx = x1;
+      yy = y1;
+    } else if (param > 1) {
+      xx = x2;
+      yy = y2;
+    } else {
+      xx = x1 + param * C;
+      yy = y1 + param * D;
+    }
+
+    return { latitude: yy, longitude: xx };
+  };
+
+  /**
+   * Apply Kalman filter for GPS noise reduction
+   */
+  const applyKalmanFilter = (
+    measurement: LatLng,
+    measurementAccuracy: number,
+  ): LatLng => {
+    if (!finalConfig.enableNoiseFiltering) {
+      return measurement;
+    }
+
+    const { lat, lng, variance } = kalmanState.current;
+
+    // First measurement - initialize
+    if (lat === 0 && lng === 0) {
+      kalmanState.current = {
+        lat: measurement.latitude,
+        lng: measurement.longitude,
+        variance: measurementAccuracy,
+      };
+      return measurement;
+    }
+
+    // Kalman gain
+    const K = variance / (variance + measurementAccuracy);
+
+    // Update estimate
+    const newLat = lat + K * (measurement.latitude - lat);
+    const newLng = lng + K * (measurement.longitude - lng);
+    const newVariance = (1 - K) * variance;
+
+    kalmanState.current = { lat: newLat, lng: newLng, variance: newVariance };
+
+    return { latitude: newLat, longitude: newLng };
+  };
+
+  /**
+   * Calculate camera look-ahead position based on speed and heading
+   */
+  const calculateLookAhead = (
+    location: LatLng,
+    currentHeading: number,
+    currentSpeed: number,
+  ): LatLng => {
+    if (!finalConfig.enableCameraLookAhead || currentSpeed < 1) {
+      return location;
+    }
+
+    // Look ahead distance scales with speed (max 100m)
+    const lookAheadMeters = Math.min(
+      currentSpeed * 10,
+      finalConfig.lookAheadDistance || 100,
+    );
+
+    // Convert heading to radians
+    const headingRad = (currentHeading * Math.PI) / 180;
+
+    // Calculate offset in degrees (approximate)
+    const latOffset = (lookAheadMeters * Math.cos(headingRad)) / 111320;
+    const lngOffset =
+      (lookAheadMeters * Math.sin(headingRad)) /
+      (111320 * Math.cos((location.latitude * Math.PI) / 180));
+
+    return {
+      latitude: location.latitude + latOffset,
+      longitude: location.longitude + lngOffset,
+    };
+  };
+
+  /**
+   * Start GPS tracking
+   */
+  const startTracking = async () => {
+    try {
+      // Request permissions
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") {
+        setError("Location permission denied");
+        return;
+      }
+
+      setIsTracking(true);
+      setError(null);
+
+      // Subscribe to location updates
+      locationSubscription.current = await Location.watchPositionAsync(
+        {
+          accuracy: Location.Accuracy.BestForNavigation,
+          timeInterval: 100, // Update every 100ms
+          distanceInterval: 1, // Update every 1 meter
+        },
+        (location) => {
+          const { latitude, longitude } = location.coords;
+          const currentSpeed = location.coords.speed || 0;
+          const currentHeading = location.coords.heading || 0;
+          const currentAccuracy = location.coords.accuracy || 10;
+
+          // Raw location
+          const rawLoc: LatLng = { latitude, longitude };
+          setRawLocation(rawLoc);
+          setSpeed(currentSpeed);
+          setHeading(currentHeading);
+          setAccuracy(currentAccuracy);
+
+          // Apply Kalman filter
+          let filteredLocation = applyKalmanFilter(rawLoc, currentAccuracy);
+
+          // Snap to polyline
+          filteredLocation = snapToPolyline(filteredLocation);
+
+          // Calculate look-ahead
+          const lookAheadLocation = calculateLookAhead(
+            filteredLocation,
+            currentHeading,
+            currentSpeed,
+          );
+
+          // Initialize or update AnimatedRegion
+          if (!animatedRegion.current) {
+            animatedRegion.current = new AnimatedRegion({
+              latitude: lookAheadLocation.latitude,
+              longitude: lookAheadLocation.longitude,
+              latitudeDelta: 0.005,
+              longitudeDelta: 0.005,
+            });
+          } else {
+            // Adaptive smoothing duration based on speed
+            const duration = currentSpeed > 10 ? 300 : 500;
+
+            animatedRegion.current
+              .timing({
+                latitude: lookAheadLocation.latitude,
+                longitude: lookAheadLocation.longitude,
+                latitudeDelta: 0.005,
+                longitudeDelta: 0.005,
+                duration: finalConfig.smoothingDuration || duration,
+                useNativeDriver: false,
+                toValue: 0, // Required by TimingAnimationConfig but unused by AnimatedRegion
+              })
+              .start();
+          }
+
+          previousLocation.current = filteredLocation;
+        },
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start tracking");
+      setIsTracking(false);
+    }
+  };
+
+  /**
+   * Stop GPS tracking
+   */
+  const stopTracking = () => {
+    if (locationSubscription.current) {
+      locationSubscription.current.remove();
+      locationSubscription.current = null;
+    }
+    setIsTracking(false);
+  };
+
+  return {
+    location: animatedRegion.current,
+    rawLocation,
+    heading,
+    speed,
+    accuracy,
+    isTracking,
+    error,
+    startTracking,
+    stopTracking,
+  };
+}

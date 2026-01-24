@@ -22,12 +22,12 @@ export default function Dashboard() {
   const handleStartNavigation = () => {
     if (stops.length === 0) {
       Alert.alert("No Stops", "Please add stops before starting navigation.", [
-        { text: "Add Stops", onPress: () => router.push("/(main)/stops") },
+        { text: "Add Stops", onPress: () => router.push("/stops" as any) },
       ]);
       return;
     }
-    // TODO: Navigate to (nav)/drive in Stage 3
-    Alert.alert("Coming Soon", "Navigation will be available in Stage 3!");
+    // Navigate to drive screen with full GPS tracking
+    router.push("/drive" as any);
   };
 
   return (
@@ -160,7 +160,7 @@ export default function Dashboard() {
               styles.secondaryButton,
               { backgroundColor: colors.card, borderColor: colors.border },
             ]}
-            onPress={() => router.push("/(main)/stops")}
+            onPress={() => router.push("/stops" as any)}
           >
             <MaterialCommunityIcons
               name="map-marker"

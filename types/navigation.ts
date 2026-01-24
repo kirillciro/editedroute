@@ -13,6 +13,19 @@ import {
 export type ParcelSize = "SMALL" | "MEDIUM" | "BIG" | "LONG" | "XXL";
 
 /**
+ * Delivery status for stops
+ */
+export type DeliveryStatus = "pending" | "delivered" | "not-handled";
+
+/**
+ * Latitude/Longitude coordinate
+ */
+export type LatLng = {
+  latitude: number;
+  longitude: number;
+};
+
+/**
  * Delivery stop data model
  */
 export type Stop = {
@@ -23,6 +36,7 @@ export type Stop = {
   lat?: number; // optional latitude (for future geocoding)
   lng?: number; // optional longitude (for future geocoding)
   deliveredAt?: Date; // optional delivery timestamp
+  deliveryStatus?: DeliveryStatus; // delivery status (pending, delivered, not-handled)
 };
 
 /**
@@ -31,6 +45,8 @@ export type Stop = {
 export type DriverStats = {
   kmDriven: number;
   stopsDone: number;
+  stopsDelivered: number;
+  stopsNotHandled: number;
   timeSpent: number; // in minutes
   averageTimePerStop: number; // in minutes
 };

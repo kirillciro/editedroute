@@ -18,6 +18,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GooglePlacesAutocomplete } from "react-native-google-places-autocomplete";
 import * as Location from "expo-location";
 import { Gyroscope, Magnetometer } from "expo-sensors";
+import { router } from "expo-router";
 
 /**
  * Google Maps-style main screen
@@ -256,6 +257,37 @@ export default function MapScreen() {
 
     return () => clearInterval(intervalId);
   }, [isNavigating, userLocation?.speed]);
+
+  // Auto-center on user's current location when map loads
+  useEffect(() => {
+    const getCenterOnUserLocation = async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status === "granted") {
+          const location = await Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.Balanced,
+          });
+          const { latitude, longitude } = location.coords;
+          setUserLocation({ latitude, longitude, speed: 0 });
+          
+          // Center map on user location
+          mapRef.current?.animateToRegion(
+            {
+              latitude,
+              longitude,
+              latitudeDelta: 0.01,
+              longitudeDelta: 0.01,
+            },
+            1000,
+          );
+        }
+      } catch (error) {
+        console.log("Could not get initial location:", error);
+      }
+    };
+
+    getCenterOnUserLocation();
+  }, []); // Run once on mount
 
   // Calculate route with Google Directions API
   // STAGE 5.3: Filter and prioritize navigation instructions
@@ -1114,6 +1146,20 @@ export default function MapScreen() {
       <View
         style={[styles.rightButtonsContainer, { bottom: insets.bottom + 100 }]}
       >
+        {/* Stats Button - STAGE 7.1 */}
+        {!isNavigating && (
+          <TouchableOpacity
+            style={styles.statsButton}
+            onPress={() => router.push("/(main)/stats")}
+          >
+            <MaterialCommunityIcons
+              name="chart-line"
+              size={24}
+              color="#1A73E8"
+            />
+          </TouchableOpacity>
+        )}
+
         {/* Stops Panel Button */}
         {destination && !isNavigating && (
           <TouchableOpacity
@@ -1388,6 +1434,22 @@ const styles = StyleSheet.create({
     elevation: 5,
   },
   stopsButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: "#fff",
+    justifyContent: "center",
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  statsButton: {
     width: 48,
     height: 48,
     borderRadius: 24,

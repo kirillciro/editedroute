@@ -41,6 +41,20 @@ function StackNavigator() {
         }}
       />
       <Stack.Screen
+        name="stats"
+        options={{
+          headerShown: true,
+          headerTitle: "Trip Statistics",
+          headerStyle: { backgroundColor: colors.headerBg },
+          headerTintColor: colors.text,
+          headerLeft: () => (
+            <Link href="/map" style={{ marginLeft: 3 }}>
+              <Ionicons name="chevron-back" size={28} color={colors.text} />
+            </Link>
+          ),
+        }}
+      />
+      <Stack.Screen
         name="profile"
         options={{
           presentation: "modal",

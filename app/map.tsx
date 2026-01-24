@@ -64,6 +64,7 @@ export default function MapScreen() {
   const [cameraBearing, setCameraBearing] = useState(0); // STAGE 4.2: Camera rotation
   const [cameraPitch, setCameraPitch] = useState(0); // STAGE 4.3: Camera tilt angle
   const [currentStopIndex, setCurrentStopIndex] = useState<number>(-1); // STAGE 5.1: Track current stop (-1 = none)
+  const [isInArrivalZone, setIsInArrivalZone] = useState(false); // STAGE 5.2: Within 10-20m of destination
   const [distance, setDistance] = useState(0);
   const [duration, setDuration] = useState(0);
   const navigationSteps = useRef<any[]>([]);
@@ -257,6 +258,48 @@ export default function MapScreen() {
   }, [isNavigating, userLocation?.speed]);
 
   // Calculate route with Google Directions API
+  // STAGE 5.3: Filter and prioritize navigation instructions
+  const filterNavigationSteps = (steps: any[]) => {
+    const filtered = [];
+    const noiseKeywords = [
+      "continue straight",
+      "continue onto",
+      "head",
+      "slight",
+    ];
+
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      const instruction = step.html_instructions.toLowerCase();
+      const distance = step.distance.value;
+
+      // Skip very short steps (< 50m) unless it's a turn
+      if (distance < 50 && !instruction.includes("turn")) {
+        continue;
+      }
+
+      // Skip noise instructions unless significant distance
+      let isNoise = false;
+      for (const keyword of noiseKeywords) {
+        if (instruction.includes(keyword) && distance < 200) {
+          isNoise = true;
+          break;
+        }
+      }
+
+      if (!isNoise) {
+        filtered.push(step);
+      }
+    }
+
+    // Always keep at least the first step
+    if (filtered.length === 0 && steps.length > 0) {
+      filtered.push(steps[0]);
+    }
+
+    return filtered;
+  };
+
   const calculateRoute = async (destLat: number, destLng: number) => {
     if (!userLocation) return;
 
@@ -287,7 +330,9 @@ export default function MapScreen() {
         navigationSteps.current = [];
         let totalDuration = 0;
         route.legs.forEach((leg: any) => {
-          navigationSteps.current.push(...leg.steps);
+          // STAGE 5.3: Filter out noise instructions
+          const filteredSteps = filterNavigationSteps(leg.steps);
+          navigationSteps.current.push(...filteredSteps);
           totalDuration += leg.duration.value;
         });
         currentStepIndex.current = 0;
@@ -643,7 +688,9 @@ export default function MapScreen() {
                     navigationSteps.current = [];
                     let totalDuration = 0;
                     route.legs.forEach((leg: any) => {
-                      navigationSteps.current.push(...leg.steps);
+                      // STAGE 5.3: Filter out noise instructions
+                      const filteredSteps = filterNavigationSteps(leg.steps);
+                      navigationSteps.current.push(...filteredSteps);
                       totalDuration += leg.duration.value;
                     });
                     currentStepIndex.current = 0;
@@ -696,6 +743,22 @@ export default function MapScreen() {
               }
             }
 
+            // STAGE 5.2: Arrival zone detection for final destination
+            if (destination && currentStopIndex >= stops.length) {
+              const distToDestination = calculateDistance(
+                latitude,
+                longitude,
+                destination.latitude,
+                destination.longitude,
+              );
+
+              // Enter arrival zone when within 20m
+              if (distToDestination < 0.02 && !isInArrivalZone) {
+                console.log("Entering arrival zone (< 20m)");
+                setIsInArrivalZone(true);
+              }
+            }
+
             // Update distance to next turn
             if (navigationSteps.current[currentStepIndex.current]) {
               const nextTurn =
@@ -708,9 +771,9 @@ export default function MapScreen() {
               );
               setDistanceToNextTurn(dist * 1000); // Convert to meters
 
-              // Move to next step if close enough
-              if (dist < 0.02) {
-                // 20 meters
+              // STAGE 5.3: Move to next step with better threshold (30m for filtered steps)
+              if (dist < 0.03) {
+                // 30 meters
                 currentStepIndex.current++;
                 if (currentStepIndex.current < navigationSteps.current.length) {
                   const step =
@@ -723,19 +786,38 @@ export default function MapScreen() {
             }
 
             // Animate camera - STAGE 4.2 & 4.3: Bearing + Pitch
-            mapRef.current?.animateToRegion(
-              {
-                latitude,
-                longitude,
-                latitudeDelta: 0.01,
-                longitudeDelta: 0.01,
-                // @ts-ignore - heading and pitch are supported but not in type definition
-                heading: cameraBearing,
-                // @ts-ignore
-                pitch: cameraPitch,
-              },
-              300,
-            );
+            // STAGE 5.2: Freeze camera at destination when in arrival zone
+            if (isInArrivalZone && destination) {
+              // Freeze camera at destination location
+              mapRef.current?.animateToRegion(
+                {
+                  latitude: destination.latitude,
+                  longitude: destination.longitude,
+                  latitudeDelta: 0.005,
+                  longitudeDelta: 0.005,
+                  // @ts-ignore
+                  heading: cameraBearing,
+                  // @ts-ignore
+                  pitch: 45, // Angled view of destination
+                },
+                300,
+              );
+            } else {
+              // Normal following behavior
+              mapRef.current?.animateToRegion(
+                {
+                  latitude,
+                  longitude,
+                  latitudeDelta: 0.01,
+                  longitudeDelta: 0.01,
+                  // @ts-ignore - heading and pitch are supported but not in type definition
+                  heading: cameraBearing,
+                  // @ts-ignore
+                  pitch: cameraPitch,
+                },
+                300,
+              );
+            }
           },
         );
         locationSubscription.current = subscription;
@@ -792,6 +874,7 @@ export default function MapScreen() {
 
         setIsNavigating(true);
         setCurrentStopIndex(stops.length > 0 ? 0 : -1); // STAGE 5.1: Start at first stop
+        setIsInArrivalZone(false); // STAGE 5.2: Reset arrival zone
       } catch (error) {
         console.error("Error starting navigation:", error);
         Alert.alert("Error", "Failed to start navigation");
@@ -1131,21 +1214,36 @@ export default function MapScreen() {
       )}
 
       {/* Navigation Instructions Panel */}
-      {isNavigating && currentInstruction && (
+      {isNavigating && (currentInstruction || isInArrivalZone) && (
         <View style={[styles.instructionPanel, { top: insets.top + 10 }]}>
           <View style={styles.instructionHeader}>
             <MaterialCommunityIcons
-              name="navigation"
+              name={isInArrivalZone ? "flag-checkered" : "navigation"}
               size={32}
-              color="#4285F4"
+              color={isInArrivalZone ? "#34A853" : "#4285F4"}
             />
             <View style={styles.instructionContent}>
-              <Text style={styles.distanceText}>
-                {distanceToNextTurn < 1000
-                  ? `${Math.round(distanceToNextTurn)} m`
-                  : `${(distanceToNextTurn / 1000).toFixed(1)} km`}
-              </Text>
-              <Text style={styles.instructionText}>{currentInstruction}</Text>
+              {isInArrivalZone ? (
+                <>
+                  <Text style={styles.arrivalText}>
+                    Arriving at destination
+                  </Text>
+                  <Text style={styles.arrivalSubtext}>
+                    {destination?.address}
+                  </Text>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.distanceText}>
+                    {distanceToNextTurn < 1000
+                      ? `${Math.round(distanceToNextTurn)} m`
+                      : `${(distanceToNextTurn / 1000).toFixed(1)} km`}
+                  </Text>
+                  <Text style={styles.instructionText}>
+                    {currentInstruction}
+                  </Text>
+                </>
+              )}
             </View>
           </View>
 
@@ -1368,6 +1466,17 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: "#333",
     fontWeight: "600",
+  },
+  arrivalText: {
+    fontSize: 22,
+    fontWeight: "700",
+    color: "#34A853",
+    marginBottom: 4,
+  },
+  arrivalSubtext: {
+    fontSize: 14,
+    color: "#666",
+    fontWeight: "500",
   },
   speedContainer: {
     flexDirection: "row",

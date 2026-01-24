@@ -62,6 +62,8 @@ export default function MapScreen() {
   const [rawHeading, setRawHeading] = useState(0); // STAGE 4.1: Raw sensor value
   const [smoothedHeading, setSmoothedHeading] = useState(0); // STAGE 4.1: Interpolated value
   const [cameraBearing, setCameraBearing] = useState(0); // STAGE 4.2: Camera rotation
+  const [cameraPitch, setCameraPitch] = useState(0); // STAGE 4.3: Camera tilt angle
+  const [currentStopIndex, setCurrentStopIndex] = useState<number>(-1); // STAGE 5.1: Track current stop (-1 = none)
   const [distance, setDistance] = useState(0);
   const [duration, setDuration] = useState(0);
   const navigationSteps = useRef<any[]>([]);
@@ -203,7 +205,7 @@ export default function MapScreen() {
     const intervalId = setInterval(() => {
       setCameraBearing((prev) => {
         const target = smoothedHeading;
-        
+
         // Calculate shortest path
         let delta = target - prev;
         if (delta > 180) delta -= 360;
@@ -218,41 +220,45 @@ export default function MapScreen() {
     return () => clearInterval(intervalId);
   }, [smoothedHeading, isNavigating, userLocation?.speed]);
 
-  // Track location changes for recording (separate from GPS callback)
+  // STAGE 4.3: Dynamic camera pitch based on speed
   useEffect(() => {
-    if (isRecording && userLocation) {
-      const lastPoint = routePoints.current[routePoints.current.length - 1];
-      if (lastPoint) {
-        const dist = calculateDistance(
-          lastPoint.latitude,
-          lastPoint.longitude,
-          userLocation.latitude,
-          userLocation.longitude,
-        );
-        if (dist > 0.001) {
-          // Only update if moved more than 1 meter
-          setDistance((prev) => prev + dist);
-          routePoints.current.push({
-            ...userLocation,
-            timestamp: Date.now(),
-          });
-        }
-      } else {
-        // First point
-        routePoints.current.push({
-          ...userLocation,
-          timestamp: Date.now(),
-        });
-      }
-    }
-  }, [userLocation, isRecording]);
-
-  // Fetch route from Google Directions API with waypoints
-  const fetchRoute = async (destLat: number, destLng: number) => {
-    if (!userLocation) {
-      Alert.alert("Error", "Current location not available");
+    if (!isNavigating) {
+      setCameraPitch(0); // Reset to 0 when not navigating
       return;
     }
+
+    const speed = userLocation?.speed || 0; // m/s
+    const speedKmh = speed * 3.6;
+
+    // Calculate target pitch based on speed ranges
+    let targetPitch = 0;
+    if (speedKmh <= 10) {
+      // 0-10 km/h: Linear interpolation from 0° to 15°
+      targetPitch = (speedKmh / 10) * 15;
+    } else if (speedKmh <= 50) {
+      // 10-50 km/h: Linear interpolation from 15° to 30°
+      targetPitch = 15 + ((speedKmh - 10) / 40) * 15;
+    } else {
+      // 50+ km/h: Linear interpolation from 30° to 60°
+      const speedOver50 = Math.min(speedKmh - 50, 50); // Cap at 100 km/h
+      targetPitch = 30 + (speedOver50 / 50) * 30;
+    }
+
+    // Smooth transition to target pitch
+    const intervalId = setInterval(() => {
+      setCameraPitch((prev) => {
+        const delta = targetPitch - prev;
+        const easingFactor = 0.1; // Smooth but responsive
+        return prev + delta * easingFactor;
+      });
+    }, 50); // 20 FPS
+
+    return () => clearInterval(intervalId);
+  }, [isNavigating, userLocation?.speed]);
+
+  // Calculate route with Google Directions API
+  const calculateRoute = async (destLat: number, destLng: number) => {
+    if (!userLocation) return;
 
     try {
       const origin = `${userLocation.latitude},${userLocation.longitude}`;
@@ -668,6 +674,28 @@ export default function MapScreen() {
               }
             }
 
+            // STAGE 5.1: Check if we've arrived at current stop (auto-advance)
+            if (stops.length > 0 && currentStopIndex < stops.length) {
+              const targetStopIndex =
+                currentStopIndex === -1 ? 0 : currentStopIndex;
+              if (targetStopIndex < stops.length) {
+                const currentStop = stops[targetStopIndex];
+                const distToStop = calculateDistance(
+                  latitude,
+                  longitude,
+                  currentStop.latitude,
+                  currentStop.longitude,
+                );
+
+                // Auto-advance when within 10m of current stop
+                if (distToStop < 0.01) {
+                  // 10 meters
+                  console.log(`Arrived at stop: ${currentStop.address}`);
+                  setCurrentStopIndex(targetStopIndex + 1);
+                }
+              }
+            }
+
             // Update distance to next turn
             if (navigationSteps.current[currentStepIndex.current]) {
               const nextTurn =
@@ -694,15 +722,17 @@ export default function MapScreen() {
               }
             }
 
-            // Animate camera - STAGE 4.2: Includes bearing rotation
+            // Animate camera - STAGE 4.2 & 4.3: Bearing + Pitch
             mapRef.current?.animateToRegion(
               {
                 latitude,
                 longitude,
                 latitudeDelta: 0.01,
                 longitudeDelta: 0.01,
-                // @ts-ignore - heading is supported but not in type definition
+                // @ts-ignore - heading and pitch are supported but not in type definition
                 heading: cameraBearing,
+                // @ts-ignore
+                pitch: cameraPitch,
               },
               300,
             );
@@ -761,6 +791,7 @@ export default function MapScreen() {
         setIsRecording(true);
 
         setIsNavigating(true);
+        setCurrentStopIndex(stops.length > 0 ? 0 : -1); // STAGE 5.1: Start at first stop
       } catch (error) {
         console.error("Error starting navigation:", error);
         Alert.alert("Error", "Failed to start navigation");
@@ -799,7 +830,7 @@ export default function MapScreen() {
       }
 
       // Fetch route
-      await fetchRoute(lat, lng);
+      await calculateRoute(lat, lng);
     }
     Keyboard.dismiss();
   };
@@ -807,10 +838,20 @@ export default function MapScreen() {
   const handleRemoveStop = async (stopId: string) => {
     const updatedStops = stops.filter((stop) => stop.id !== stopId);
     setStops(updatedStops);
+    setCurrentStopIndex(updatedStops.length > 0 && isNavigating ? 0 : -1); // STAGE 5.1: Reset stop index
 
     // Recalculate route if destination exists
     if (destination) {
-      await fetchRoute(destination.latitude, destination.longitude);
+      await calculateRoute(destination.latitude, destination.longitude);
+    }
+  };
+
+  // STAGE 5.1: Manual advance to next stop
+  const handleNextStop = () => {
+    if (stops.length > 0 && currentStopIndex < stops.length) {
+      const nextIndex = currentStopIndex === -1 ? 0 : currentStopIndex + 1;
+      setCurrentStopIndex(nextIndex);
+      console.log(`Manually advanced to stop ${nextIndex + 1}/${stops.length}`);
     }
   };
 
@@ -824,10 +865,11 @@ export default function MapScreen() {
 
   const onStopsDragEnd = async (data: typeof stops) => {
     setStops(data);
+    setCurrentStopIndex(data.length > 0 && isNavigating ? 0 : -1); // STAGE 5.1: Reset to first stop
 
     // Recalculate route with new order
     if (destination) {
-      await fetchRoute(destination.latitude, destination.longitude);
+      await calculateRoute(destination.latitude, destination.longitude);
     }
   };
 
@@ -1133,6 +1175,21 @@ export default function MapScreen() {
             <Text style={styles.etaText}>🕐 {eta}</Text>
             <Text style={styles.etaText}>📍 {distance.toFixed(1)} km</Text>
           </View>
+
+          {/* STAGE 5.1: Next Stop Button */}
+          {stops.length > 0 && currentStopIndex < stops.length && (
+            <TouchableOpacity
+              style={styles.nextStopButton}
+              onPress={handleNextStop}
+            >
+              <Ionicons name="flag" size={20} color="#fff" />
+              <Text style={styles.nextStopButtonText}>
+                {currentStopIndex === -1 || currentStopIndex === 0
+                  ? `Stop 1/${stops.length}`
+                  : `Stop ${currentStopIndex + 1}/${stops.length}`}
+              </Text>
+            </TouchableOpacity>
+          )}
         </View>
       )}
     </View>
@@ -1373,6 +1430,22 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#666",
     fontWeight: "600",
+  },
+  nextStopButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#34A853",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+    marginTop: 12,
+    gap: 8,
+    justifyContent: "center",
+  },
+  nextStopButtonText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "700",
   },
   stageInfo: {
     position: "absolute",

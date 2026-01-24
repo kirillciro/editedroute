@@ -61,6 +61,7 @@ export default function MapScreen() {
   const [heading, setHeading] = useState(0); // Legacy - kept for compatibility
   const [rawHeading, setRawHeading] = useState(0); // STAGE 4.1: Raw sensor value
   const [smoothedHeading, setSmoothedHeading] = useState(0); // STAGE 4.1: Interpolated value
+  const [cameraBearing, setCameraBearing] = useState(0); // STAGE 4.2: Camera rotation
   const [distance, setDistance] = useState(0);
   const [duration, setDuration] = useState(0);
   const navigationSteps = useRef<any[]>([]);
@@ -178,6 +179,44 @@ export default function MapScreen() {
 
     return () => clearInterval(intervalId);
   }, [rawHeading, isSensorsActive]);
+
+  // STAGE 4.2: Camera bearing smoothing with speed-based easing
+  useEffect(() => {
+    if (!isNavigating) return;
+
+    const speed = userLocation?.speed || 0; // m/s
+    const speedKmh = speed * 3.6;
+
+    // Calculate easing factor based on speed
+    // Low speed (0-10 km/h): slow easing (0.02-0.05)
+    // Medium speed (10-50 km/h): medium easing (0.05-0.15)
+    // High speed (50+ km/h): fast easing (0.15-0.25)
+    let easingFactor = 0.02; // Default: very slow
+    if (speedKmh > 50) {
+      easingFactor = 0.25; // Fast easing at highway speeds
+    } else if (speedKmh > 10) {
+      easingFactor = 0.05 + ((speedKmh - 10) / 40) * 0.1; // Interpolate between 0.05 and 0.15
+    } else if (speedKmh > 0) {
+      easingFactor = 0.02 + (speedKmh / 10) * 0.03; // Interpolate between 0.02 and 0.05
+    }
+
+    const intervalId = setInterval(() => {
+      setCameraBearing((prev) => {
+        const target = smoothedHeading;
+        
+        // Calculate shortest path
+        let delta = target - prev;
+        if (delta > 180) delta -= 360;
+        if (delta < -180) delta += 360;
+
+        // Apply easing
+        const result = prev + delta * easingFactor;
+        return ((result % 360) + 360) % 360;
+      });
+    }, 50); // 20 FPS for camera (smoother, less battery intensive)
+
+    return () => clearInterval(intervalId);
+  }, [smoothedHeading, isNavigating, userLocation?.speed]);
 
   // Track location changes for recording (separate from GPS callback)
   useEffect(() => {
@@ -552,7 +591,7 @@ export default function MapScreen() {
             if (routeCoordinates.length > 0) {
               // Find closest point on route
               let minDistance = Infinity;
-              
+
               for (let i = 0; i < routeCoordinates.length; i++) {
                 const dist = calculateDistance(
                   latitude,
@@ -567,7 +606,9 @@ export default function MapScreen() {
 
               // If user is more than 50 meters off route, recalculate
               if (minDistance > 0.05 && destination) {
-                console.log(`Off route by ${(minDistance * 1000).toFixed(0)}m - recalculating...`);
+                console.log(
+                  `Off route by ${(minDistance * 1000).toFixed(0)}m - recalculating...`,
+                );
                 try {
                   // Build waypoints parameter if there are stops
                   let waypointsParam = "";
@@ -587,7 +628,9 @@ export default function MapScreen() {
 
                   if (data.routes && data.routes.length > 0) {
                     const route = data.routes[0];
-                    const points = decodePolyline(route.overview_polyline.points);
+                    const points = decodePolyline(
+                      route.overview_polyline.points,
+                    );
                     setRouteCoordinates(points);
 
                     // Update navigation steps
@@ -607,13 +650,17 @@ export default function MapScreen() {
                           "",
                         ),
                       );
-                      setDistanceToNextTurn(navigationSteps.current[0].distance.value);
+                      setDistanceToNextTurn(
+                        navigationSteps.current[0].distance.value,
+                      );
                     }
 
                     // Update ETA
                     const hours = Math.floor(totalDuration / 3600);
                     const minutes = Math.floor((totalDuration % 3600) / 60);
-                    setEta(hours > 0 ? `${hours}h ${minutes}m` : `${minutes} min`);
+                    setEta(
+                      hours > 0 ? `${hours}h ${minutes}m` : `${minutes} min`,
+                    );
                   }
                 } catch (error) {
                   console.error("Error recalculating route:", error);
@@ -647,13 +694,15 @@ export default function MapScreen() {
               }
             }
 
-            // Animate camera
+            // Animate camera - STAGE 4.2: Includes bearing rotation
             mapRef.current?.animateToRegion(
               {
                 latitude,
                 longitude,
                 latitudeDelta: 0.01,
                 longitudeDelta: 0.01,
+                // @ts-ignore - heading is supported but not in type definition
+                heading: cameraBearing,
               },
               300,
             );

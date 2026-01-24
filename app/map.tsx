@@ -58,7 +58,9 @@ export default function MapScreen() {
   const [isTracking, setIsTracking] = useState(false);
   const [isSensorsActive, setIsSensorsActive] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
-  const [heading, setHeading] = useState(0);
+  const [heading, setHeading] = useState(0); // Legacy - kept for compatibility
+  const [rawHeading, setRawHeading] = useState(0); // STAGE 4.1: Raw sensor value
+  const [smoothedHeading, setSmoothedHeading] = useState(0); // STAGE 4.1: Interpolated value
   const [distance, setDistance] = useState(0);
   const [duration, setDuration] = useState(0);
   const navigationSteps = useRef<any[]>([]);
@@ -121,6 +123,31 @@ export default function MapScreen() {
     return poly;
   };
 
+  // STAGE 4.1: Smooth heading interpolation with max delta
+  const smoothHeadingValue = (target: number, current: number): number => {
+    // Normalize angles to 0-360
+    target = ((target % 360) + 360) % 360;
+    current = ((current % 360) + 360) % 360;
+
+    // Calculate shortest path delta
+    let delta = target - current;
+    if (delta > 180) {
+      delta -= 360;
+    } else if (delta < -180) {
+      delta += 360;
+    }
+
+    // Max delta per frame: 10 degrees (smooth but responsive)
+    const MAX_DELTA = 10;
+    if (Math.abs(delta) > MAX_DELTA) {
+      delta = Math.sign(delta) * MAX_DELTA;
+    }
+
+    // Apply delta and normalize
+    const result = current + delta;
+    return ((result % 360) + 360) % 360;
+  };
+
   // Haversine formula for distance calculation
   const calculateDistance = (
     lat1: number,
@@ -140,6 +167,17 @@ export default function MapScreen() {
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     return R * c;
   };
+
+  // STAGE 4.1: Smooth heading interpolation with frame-based updates
+  useEffect(() => {
+    if (!isSensorsActive) return;
+
+    const intervalId = setInterval(() => {
+      setSmoothedHeading((prev) => smoothHeadingValue(rawHeading, prev));
+    }, 16); // 60 FPS
+
+    return () => clearInterval(intervalId);
+  }, [rawHeading, isSensorsActive]);
 
   // Track location changes for recording (separate from GPS callback)
   useEffect(() => {
@@ -371,7 +409,9 @@ export default function MapScreen() {
           // Normalize to 0-360
           currentHeading.current = ((currentHeading.current % 360) + 360) % 360;
 
-          setHeading(currentHeading.current);
+          // STAGE 4.1: Update raw heading for smooth interpolation
+          setRawHeading(currentHeading.current);
+          setHeading(currentHeading.current); // Legacy compatibility
         });
         gyroSubscription.current = gyroSub;
 
@@ -802,7 +842,7 @@ export default function MapScreen() {
           />
         )}
 
-        {/* User Arrow Marker during navigation */}
+        {/* User Arrow Marker during navigation - STAGE 4.1: Uses smoothedHeading */}
         {isNavigating && userLocation && (
           <Marker
             coordinate={{
@@ -811,7 +851,7 @@ export default function MapScreen() {
             }}
             anchor={{ x: 0.5, y: 0.5 }}
             flat={true}
-            rotation={heading}
+            rotation={smoothedHeading}
           >
             <View style={styles.arrowMarker}>
               <MaterialCommunityIcons

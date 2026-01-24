@@ -4,6 +4,7 @@ import { ClerkProvider, ClerkLoaded } from "@clerk/clerk-expo";
 import { tokenCache } from "@clerk/clerk-expo/token-cache";
 import { passkeys } from "@clerk/clerk-expo/passkeys";
 import { ThemeProvider } from "../context/ThemeContext";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 
 /**
  * Root layout component
@@ -15,21 +16,23 @@ export default function RootLayout() {
 
   if (!publishableKey) {
     throw new Error(
-      "Missing EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY. Please add it to your .env file"
+      "Missing EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY. Please add it to your .env file",
     );
   }
 
   return (
-    <ClerkProvider
-      tokenCache={tokenCache}
-      publishableKey={publishableKey}
-      __experimental_passkeys={passkeys}
-    >
-      <ClerkLoaded>
-        <ThemeProvider>
-          <Slot />
-        </ThemeProvider>
-      </ClerkLoaded>
-    </ClerkProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <ClerkProvider
+        tokenCache={tokenCache}
+        publishableKey={publishableKey}
+        __experimental_passkeys={passkeys}
+      >
+        <ClerkLoaded>
+          <ThemeProvider>
+            <Slot />
+          </ThemeProvider>
+        </ClerkLoaded>
+      </ClerkProvider>
+    </GestureHandlerRootView>
   );
 }

@@ -10,6 +10,10 @@ import {
 } from "react-native";
 import MapView, { PROVIDER_GOOGLE, Polyline, Marker } from "react-native-maps";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import DraggableFlatList, {
+  RenderItemParams,
+  ScaleDecorator,
+} from "react-native-draggable-flatlist";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GooglePlacesAutocomplete } from "react-native-google-places-autocomplete";
 import * as Location from "expo-location";
@@ -21,6 +25,7 @@ import { Gyroscope, Magnetometer } from "expo-sensors";
  */
 export default function MapScreen() {
   const mapRef = useRef<MapView>(null);
+  const searchRef = useRef<any>(null);
   const insets = useSafeAreaInsets();
   const [userLocation, setUserLocation] = useState<{
     latitude: number;
@@ -32,6 +37,15 @@ export default function MapScreen() {
     longitude: number;
     address: string;
   } | null>(null);
+  const [stops, setStops] = useState<
+    {
+      id: string;
+      latitude: number;
+      longitude: number;
+      address: string;
+    }[]
+  >([]);
+  const [showStopsPanel, setShowStopsPanel] = useState(false);
   const [routeCoordinates, setRouteCoordinates] = useState<
     { latitude: number; longitude: number }[]
   >([]);
@@ -156,7 +170,7 @@ export default function MapScreen() {
     }
   }, [userLocation, isRecording]);
 
-  // Fetch route from Google Directions API
+  // Fetch route from Google Directions API with waypoints
   const fetchRoute = async (destLat: number, destLng: number) => {
     if (!userLocation) {
       Alert.alert("Error", "Current location not available");
@@ -166,7 +180,17 @@ export default function MapScreen() {
     try {
       const origin = `${userLocation.latitude},${userLocation.longitude}`;
       const destination = `${destLat},${destLng}`;
-      const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${destination}&key=${process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY}`;
+
+      // Build waypoints parameter if there are stops
+      let waypointsParam = "";
+      if (stops.length > 0) {
+        const waypoints = stops
+          .map((stop) => `${stop.latitude},${stop.longitude}`)
+          .join("|");
+        waypointsParam = `&waypoints=optimize:true|${waypoints}`;
+      }
+
+      const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${destination}${waypointsParam}&key=${process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY}`;
 
       const response = await fetch(url);
       const data = await response.json();
@@ -175,7 +199,14 @@ export default function MapScreen() {
         const route = data.routes[0];
         const points = decodePolyline(route.overview_polyline.points);
         setRouteCoordinates(points);
-        navigationSteps.current = route.legs[0].steps;
+
+        // Combine all steps from all legs
+        navigationSteps.current = [];
+        let totalDuration = 0;
+        route.legs.forEach((leg: any) => {
+          navigationSteps.current.push(...leg.steps);
+          totalDuration += leg.duration.value;
+        });
         currentStepIndex.current = 0;
 
         // Set initial instruction
@@ -189,9 +220,10 @@ export default function MapScreen() {
           setDistanceToNextTurn(navigationSteps.current[0].distance.value);
         }
 
-        // Calculate ETA
-        const duration = route.legs[0].duration.text;
-        setEta(duration);
+        // Calculate total ETA
+        const hours = Math.floor(totalDuration / 3600);
+        const minutes = Math.floor((totalDuration % 3600) / 60);
+        setEta(hours > 0 ? `${hours}h ${minutes}m` : `${minutes} min`);
 
         // Fit map to route
         mapRef.current?.fitToCoordinates(points, {
@@ -277,13 +309,13 @@ export default function MapScreen() {
             const { latitude, longitude } = location.coords;
             setUserLocation({ latitude, longitude });
 
-            // Animate camera to follow user
+            // Animate camera to follow user (zoom closer during navigation)
             mapRef.current?.animateToRegion(
               {
                 latitude,
                 longitude,
-                latitudeDelta: 0.01,
-                longitudeDelta: 0.01,
+                latitudeDelta: isNavigating ? 0.005 : 0.01,
+                longitudeDelta: isNavigating ? 0.005 : 0.01,
               },
               300,
             );
@@ -472,9 +504,82 @@ export default function MapScreen() {
             timeInterval: 100,
             distanceInterval: 1,
           },
-          (location) => {
+          async (location) => {
             const { latitude, longitude, speed } = location.coords;
             setUserLocation({ latitude, longitude, speed: speed || 0 });
+
+            // Check if user has deviated from route
+            if (routeCoordinates.length > 0) {
+              // Find closest point on route
+              let minDistance = Infinity;
+              
+              for (let i = 0; i < routeCoordinates.length; i++) {
+                const dist = calculateDistance(
+                  latitude,
+                  longitude,
+                  routeCoordinates[i].latitude,
+                  routeCoordinates[i].longitude,
+                );
+                if (dist < minDistance) {
+                  minDistance = dist;
+                }
+              }
+
+              // If user is more than 50 meters off route, recalculate
+              if (minDistance > 0.05 && destination) {
+                console.log(`Off route by ${(minDistance * 1000).toFixed(0)}m - recalculating...`);
+                try {
+                  // Build waypoints parameter if there are stops
+                  let waypointsParam = "";
+                  if (stops.length > 0) {
+                    const waypoints = stops
+                      .map((stop) => `${stop.latitude},${stop.longitude}`)
+                      .join("|");
+                    waypointsParam = `&waypoints=optimize:true|${waypoints}`;
+                  }
+
+                  const origin = `${latitude},${longitude}`;
+                  const dest = `${destination.latitude},${destination.longitude}`;
+                  const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${dest}${waypointsParam}&key=${process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY}`;
+
+                  const response = await fetch(url);
+                  const data = await response.json();
+
+                  if (data.routes && data.routes.length > 0) {
+                    const route = data.routes[0];
+                    const points = decodePolyline(route.overview_polyline.points);
+                    setRouteCoordinates(points);
+
+                    // Update navigation steps
+                    navigationSteps.current = [];
+                    let totalDuration = 0;
+                    route.legs.forEach((leg: any) => {
+                      navigationSteps.current.push(...leg.steps);
+                      totalDuration += leg.duration.value;
+                    });
+                    currentStepIndex.current = 0;
+
+                    // Update instruction
+                    if (navigationSteps.current.length > 0) {
+                      setCurrentInstruction(
+                        navigationSteps.current[0].html_instructions.replace(
+                          /<[^>]*>/g,
+                          "",
+                        ),
+                      );
+                      setDistanceToNextTurn(navigationSteps.current[0].distance.value);
+                    }
+
+                    // Update ETA
+                    const hours = Math.floor(totalDuration / 3600);
+                    const minutes = Math.floor((totalDuration % 3600) / 60);
+                    setEta(hours > 0 ? `${hours}h ${minutes}m` : `${minutes} min`);
+                  }
+                } catch (error) {
+                  console.error("Error recalculating route:", error);
+                }
+              }
+            }
 
             // Update distance to next turn
             if (navigationSteps.current[currentStepIndex.current]) {
@@ -577,11 +682,27 @@ export default function MapScreen() {
   const handlePlaceSelect = async (data: any, details: any) => {
     if (details?.geometry?.location) {
       const { lat, lng } = details.geometry.location;
-      setDestination({
-        latitude: lat,
-        longitude: lng,
-        address: data.description,
-      });
+
+      // If no destination yet, set it as destination
+      if (!destination) {
+        setDestination({
+          latitude: lat,
+          longitude: lng,
+          address: data.description,
+        });
+      } else {
+        // Add as a stop before the destination
+        const newStop = {
+          id: Date.now().toString(),
+          latitude: lat,
+          longitude: lng,
+          address: data.description,
+        };
+        setStops((prev) => [...prev, newStop]);
+      }
+
+      // Clear search input
+      searchRef.current?.setAddressText("");
 
       // Get current location first if not available
       if (!userLocation) {
@@ -592,6 +713,69 @@ export default function MapScreen() {
       await fetchRoute(lat, lng);
     }
     Keyboard.dismiss();
+  };
+
+  const handleRemoveStop = async (stopId: string) => {
+    const updatedStops = stops.filter((stop) => stop.id !== stopId);
+    setStops(updatedStops);
+
+    // Recalculate route if destination exists
+    if (destination) {
+      await fetchRoute(destination.latitude, destination.longitude);
+    }
+  };
+
+  const handleRemoveDestination = () => {
+    setDestination(null);
+    setStops([]);
+    setRouteCoordinates([]);
+    setCurrentInstruction("");
+    setEta("");
+  };
+
+  const onStopsDragEnd = async (data: typeof stops) => {
+    setStops(data);
+
+    // Recalculate route with new order
+    if (destination) {
+      await fetchRoute(destination.latitude, destination.longitude);
+    }
+  };
+
+  const renderStopItem = ({
+    item,
+    drag,
+    isActive,
+  }: RenderItemParams<(typeof stops)[0]>) => {
+    const index = stops.findIndex((stop) => stop.id === item.id);
+
+    return (
+      <ScaleDecorator>
+        <TouchableOpacity
+          onLongPress={drag}
+          disabled={isActive}
+          activeOpacity={0.8}
+        >
+          <View style={[styles.stopItem, isActive && styles.stopItemDragging]}>
+            <TouchableOpacity onLongPress={drag}>
+              <MaterialCommunityIcons name="drag" size={24} color="#999" />
+            </TouchableOpacity>
+            <View style={styles.stopItemNumber}>
+              <Text style={styles.stopItemNumberText}>{index + 1}</Text>
+            </View>
+            <Text style={styles.stopItemAddress} numberOfLines={2}>
+              {item.address}
+            </Text>
+            <TouchableOpacity
+              onPress={() => handleRemoveStop(item.id)}
+              style={styles.stopItemButton}
+            >
+              <Ionicons name="trash-outline" size={16} color="#EA4335" />
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </ScaleDecorator>
+    );
   };
 
   return (
@@ -618,6 +802,44 @@ export default function MapScreen() {
           />
         )}
 
+        {/* User Arrow Marker during navigation */}
+        {isNavigating && userLocation && (
+          <Marker
+            coordinate={{
+              latitude: userLocation.latitude,
+              longitude: userLocation.longitude,
+            }}
+            anchor={{ x: 0.5, y: 0.5 }}
+            flat={true}
+            rotation={heading}
+          >
+            <View style={styles.arrowMarker}>
+              <MaterialCommunityIcons
+                name="navigation"
+                size={32}
+                color="#4285F4"
+              />
+            </View>
+          </Marker>
+        )}
+
+        {/* Stop Markers */}
+        {stops.map((stop, index) => (
+          <Marker
+            key={stop.id}
+            coordinate={{
+              latitude: stop.latitude,
+              longitude: stop.longitude,
+            }}
+            title={`Stop ${index + 1}`}
+            description={stop.address}
+          >
+            <View style={styles.stopMarker}>
+              <Text style={styles.stopMarkerText}>{index + 1}</Text>
+            </View>
+          </Marker>
+        ))}
+
         {/* Destination Marker */}
         {destination && (
           <Marker
@@ -627,56 +849,126 @@ export default function MapScreen() {
             }}
             title="Destination"
             description={destination.address}
+            pinColor="#EA4335"
           />
         )}
       </MapView>
 
       {/* Search Bar at Top - Google Maps style with real autocomplete */}
-      <View style={[styles.searchContainer, { top: insets.top + 10 }]}>
-        <GooglePlacesAutocomplete
-          placeholder="Search here"
-          fetchDetails={true}
-          onPress={handlePlaceSelect}
-          query={{
-            key: process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY,
-            language: "en",
-            location: userLocation
-              ? `${userLocation.latitude},${userLocation.longitude}`
-              : undefined,
-            radius: 50000, // 50km radius
-            rankby: "distance",
-          }}
-          styles={{
-            container: {
-              flex: 0,
-            },
-            textInputContainer: styles.searchBar,
-            textInput: styles.searchInput,
-            listView: styles.suggestionsContainer,
-            row: styles.suggestionItem,
-            description: styles.suggestionText,
-          }}
-          renderLeftButton={() => (
-            <Ionicons
-              name="search"
-              size={20}
-              color="#666"
-              style={styles.searchIcon}
+      {!isNavigating && (
+        <View style={[styles.searchContainer, { top: insets.top + 10 }]}>
+          <GooglePlacesAutocomplete
+            ref={searchRef}
+            placeholder="Search here"
+            fetchDetails={true}
+            onPress={handlePlaceSelect}
+            query={{
+              key: process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY,
+              language: "en",
+              location: userLocation
+                ? `${userLocation.latitude},${userLocation.longitude}`
+                : undefined,
+              radius: 50000, // 50km radius
+              rankby: "distance",
+            }}
+            styles={{
+              container: {
+                flex: 0,
+              },
+              textInputContainer: styles.searchBar,
+              textInput: styles.searchInput,
+              listView: styles.suggestionsContainer,
+              row: styles.suggestionItem,
+              description: styles.suggestionText,
+            }}
+            renderLeftButton={() => (
+              <Ionicons
+                name="search"
+                size={20}
+                color="#666"
+                style={styles.searchIcon}
+              />
+            )}
+            enablePoweredByContainer={false}
+            nearbyPlacesAPI="GooglePlacesSearch"
+            debounce={300}
+          />
+        </View>
+      )}
+
+      {/* Right side buttons container */}
+      <View
+        style={[styles.rightButtonsContainer, { bottom: insets.bottom + 100 }]}
+      >
+        {/* Stops Panel Button */}
+        {destination && !isNavigating && (
+          <TouchableOpacity
+            style={styles.stopsButton}
+            onPress={() => setShowStopsPanel(!showStopsPanel)}
+          >
+            <MaterialCommunityIcons
+              name="map-marker-multiple"
+              size={24}
+              color="#1A73E8"
             />
-          )}
-          enablePoweredByContainer={false}
-          nearbyPlacesAPI="GooglePlacesSearch"
-          debounce={300}
-        />
+            {stops.length > 0 && (
+              <View style={styles.stopsBadge}>
+                <Text style={styles.stopsBadgeText}>{stops.length}</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+        )}
+
+        {/* My Location Button */}
+        <TouchableOpacity
+          style={styles.myLocationButton}
+          onPress={handleMyLocation}
+        >
+          <Ionicons name="locate" size={24} color="#1A73E8" />
+        </TouchableOpacity>
       </View>
 
-      {/* My Location Button - Google Maps style */}
-      <TouchableOpacity
-        style={[styles.myLocationButton, { bottom: insets.bottom + 100 }]}
-        onPress={handleMyLocation}
-      >
-        <Ionicons name="locate" size={24} color="#1A73E8" />
-      </TouchableOpacity>
+      {/* Stops Panel */}
+      {showStopsPanel && !isNavigating && (
+        <View style={[styles.stopsPanel, { bottom: insets.bottom + 180 }]}>
+          <View style={styles.stopsPanelHeader}>
+            <Text style={styles.stopsPanelTitle}>Route Stops</Text>
+            <TouchableOpacity onPress={() => setShowStopsPanel(false)}>
+              <Ionicons name="close" size={24} color="#666" />
+            </TouchableOpacity>
+          </View>
+          <DraggableFlatList
+            data={stops}
+            onDragEnd={({ data }) => onStopsDragEnd(data)}
+            keyExtractor={(item) => item.id}
+            renderItem={renderStopItem}
+            style={styles.stopsList}
+            containerStyle={{ maxHeight: 200 }}
+            ListFooterComponent={
+              <View style={styles.stopItem}>
+                <View style={{ width: 24 }} />
+                <View style={[styles.stopItemNumber, styles.destinationNumber]}>
+                  <Ionicons name="flag" size={14} color="#fff" />
+                </View>
+                <Text style={styles.stopItemAddress} numberOfLines={2}>
+                  {destination?.address}
+                </Text>
+                <TouchableOpacity
+                  onPress={handleRemoveDestination}
+                  style={styles.stopItemButton}
+                >
+                  <Ionicons name="trash-outline" size={16} color="#EA4335" />
+                </TouchableOpacity>
+              </View>
+            }
+          />
+          <View style={styles.stopsPanelFooter}>
+            <Text style={styles.stopsPanelHint}>
+              Search for a location to add more stops
+            </Text>
+          </View>
+        </View>
+      )}
 
       {/* Start Navigation Button - replaces individual toggles */}
       {destination && (
@@ -703,9 +995,7 @@ export default function MapScreen() {
       {!isNavigating && !destination && (
         <View style={[styles.stageInfo, { bottom: insets.bottom + 20 }]}>
           <Text style={styles.stageText}>STAGE 6: Full Navigation ✓</Text>
-          <Text style={styles.stageSubtext}>
-            Search destination to begin
-          </Text>
+          <Text style={styles.stageSubtext}>Search destination to begin</Text>
         </View>
       )}
 
@@ -821,9 +1111,39 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: "#333",
   },
-  myLocationButton: {
+  arrowMarker: {
+    width: 40,
+    height: 40,
+    backgroundColor: "#fff",
+    opacity: 0.9,
+    borderRadius: 20,
+    justifyContent: "center",
+    alignItems: "center",
+    elevation: 5,
+  },
+  rightButtonsContainer: {
     position: "absolute",
     right: 16,
+    flexDirection: "column",
+    gap: 12,
+  },
+  myLocationButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: "#fff",
+    justifyContent: "center",
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  stopsButton: {
     width: 48,
     height: 48,
     borderRadius: 24,
@@ -984,5 +1304,137 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 12,
     opacity: 0.8,
+  },
+  stopMarker: {
+    width: 32,
+    height: 32,
+    backgroundColor: "#4285F4",
+    borderRadius: 16,
+    borderWidth: 3,
+    borderColor: "#fff",
+    justifyContent: "center",
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  stopMarkerText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  stopsBadge: {
+    position: "absolute",
+    top: -4,
+    right: -4,
+    backgroundColor: "#EA4335",
+    borderRadius: 10,
+    width: 20,
+    height: 20,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  stopsBadgeText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  stopsPanel: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    maxHeight: 300,
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    shadowColor: "#000",
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 10,
+  },
+  stopsPanelHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E0E0E0",
+  },
+  stopsPanelTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#333",
+  },
+  stopsList: {
+    maxHeight: 200,
+  },
+  stopItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#f5f5f5",
+    backgroundColor: "#fff",
+  },
+  stopItemDragging: {
+    backgroundColor: "#f9f9f9",
+    shadowColor: "#000",
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  stopItemNumber: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "#4285F4",
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 12,
+  },
+  destinationNumber: {
+    backgroundColor: "#EA4335",
+  },
+  stopItemNumberText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  stopItemAddress: {
+    flex: 1,
+    fontSize: 14,
+    color: "#333",
+  },
+  stopItemActions: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  stopItemButton: {
+    padding: 4,
+  },
+  stopsPanelFooter: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#E0E0E0",
+  },
+  stopsPanelHint: {
+    fontSize: 12,
+    color: "#666",
+    textAlign: "center",
   },
 });

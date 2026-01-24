@@ -13,8 +13,9 @@ import {
 import { useTheme } from "@/context/ThemeContext";
 import { MaterialCommunityIcons, Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import * as ImagePicker from "expo-image-picker";
-import * as FileSystem from "expo-file-system/legacy";
+// TODO: Fix expo-image-picker native module
+// import * as ImagePicker from "expo-image-picker";
+// import * as FileSystem from "expo-file-system/legacy";
 import { White, Success, Warning, AppleBlue } from "@/utils/colors";
 
 export default function Profile() {
@@ -25,6 +26,13 @@ export default function Profile() {
   const [isCreatingPasskey, setIsCreatingPasskey] = useState(false);
 
   const handleImagePick = async () => {
+    Alert.alert(
+      "Coming Soon",
+      "Image picker will be enabled in production build",
+    );
+    return;
+    // TODO: Enable after fixing native module
+    /*
     try {
       // Request permission
       const { status } =
@@ -69,6 +77,7 @@ export default function Profile() {
         "Failed to update profile picture. Please try again."
       );
     }
+    */
   };
 
   const handleCreatePasskey = async () => {
@@ -83,7 +92,7 @@ export default function Profile() {
       }
       Alert.alert(
         "Error",
-        error?.errors?.[0]?.message || "Failed to create passkey"
+        error?.errors?.[0]?.message || "Failed to create passkey",
       );
     } finally {
       setIsCreatingPasskey(false);

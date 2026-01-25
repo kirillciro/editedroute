@@ -65,6 +65,7 @@ export default function MapScreen() {
   const [smoothedHeading, setSmoothedHeading] = useState(0); // STAGE 4.1: Interpolated value
   const [cameraBearing, setCameraBearing] = useState(0); // STAGE 4.2: Camera rotation
   const [cameraPitch, setCameraPitch] = useState(0); // STAGE 4.3: Camera tilt angle
+  const [cameraZoom, setCameraZoom] = useState(0.005); // Dynamic zoom delta: 0.003 (close) to 0.02 (far)
   const [currentStopIndex, setCurrentStopIndex] = useState<number>(-1); // STAGE 5.1: Track current stop (-1 = none)
   const [isInArrivalZone, setIsInArrivalZone] = useState(false); // STAGE 5.2: Within 10-20m of destination
   const [appState, setAppState] = useState(AppState.currentState); // STAGE 9.1: Track app state
@@ -144,8 +145,8 @@ export default function MapScreen() {
       delta += 360;
     }
 
-    // Max delta per frame: 10 degrees (smooth but responsive)
-    const MAX_DELTA = 10;
+    // Max delta per frame: 20 degrees (more responsive rotation)
+    const MAX_DELTA = 20;
     if (Math.abs(delta) > MAX_DELTA) {
       delta = Math.sign(delta) * MAX_DELTA;
     }
@@ -257,6 +258,41 @@ export default function MapScreen() {
         return prev + delta * easingFactor;
       });
     }, 50); // 20 FPS
+
+    return () => clearInterval(intervalId);
+  }, [isNavigating, userLocation?.speed, appState]);
+
+  // Dynamic camera zoom based on speed (Google Maps style with deltas)
+  useEffect(() => {
+    if (!isNavigating || appState !== "active") {
+      setCameraZoom(0.005); // Reset to default street view when not navigating
+      return;
+    }
+
+    const speed = userLocation?.speed || 0; // m/s
+    const speedKmh = speed * 3.6;
+
+    // Calculate target zoom delta based on speed
+    // Low speed (0-30 km/h): Close zoom 0.003 (see street names clearly)
+    // Medium speed (30-60 km/h): Medium zoom 0.008
+    // High speed (60+ km/h): Far zoom 0.02 (see far ahead for highway)
+    let targetZoomDelta = 0.003; // Default: very close zoom for street names
+    if (speedKmh <= 30) {
+      targetZoomDelta = 0.003 + (speedKmh / 30) * 0.005; // 0.003 to 0.008
+    } else if (speedKmh <= 60) {
+      targetZoomDelta = 0.008 + ((speedKmh - 30) / 30) * 0.012; // 0.008 to 0.02
+    } else {
+      targetZoomDelta = 0.02; // Max zoom out at highway speeds
+    }
+
+    // Smooth transition to target zoom
+    const intervalId = setInterval(() => {
+      setCameraZoom((prev) => {
+        const delta = targetZoomDelta - prev;
+        const easingFactor = 0.05; // Slow and smooth zoom transitions
+        return prev + delta * easingFactor;
+      });
+    }, 100); // 10 FPS for zoom (subtle changes)
 
     return () => clearInterval(intervalId);
   }, [isNavigating, userLocation?.speed, appState]);
@@ -771,6 +807,9 @@ export default function MapScreen() {
           return;
         }
 
+        // Set initial zoom for navigation (street level)
+        setCameraZoom(18);
+
         // Start GPS tracking
         const subscription = await Location.watchPositionAsync(
           {
@@ -947,13 +986,13 @@ export default function MapScreen() {
                 300,
               );
             } else {
-              // Normal following behavior
+              // Normal following behavior with dynamic zoom
               mapRef.current?.animateToRegion(
                 {
                   latitude,
                   longitude,
-                  latitudeDelta: 0.01,
-                  longitudeDelta: 0.01,
+                  latitudeDelta: cameraZoom, // Dynamic: close at low speed, far at high speed
+                  longitudeDelta: cameraZoom,
                   // @ts-ignore - heading and pitch are supported but not in type definition
                   heading: cameraBearing,
                   // @ts-ignore

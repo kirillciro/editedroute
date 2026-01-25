@@ -2,26 +2,39 @@
   "expo": {
     "name": "EditedRoute",
     "slug": "EditedRoute",
-    "version": "32.0.0",
+    "version": "38.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/app-icon.png",
     "scheme": "editedroute",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/images/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#FFFFFF"
+    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.kirills.editedroute",
-      "buildNumber": "32",
+      "buildNumber": "38",
       "icon": "./assets/images/app-icon.png",
       "associatedDomains": [
         "applinks:willing-unicorn-16.clerk.accounts.dev",
         "webcredentials:willing-unicorn-16.clerk.accounts.dev"
       ],
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "This app uses your location to show you relevant routes and places nearby.",
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "This app uses your location to provide turn-by-turn navigation and track your delivery route.",
-        "NSMotionUsageDescription": "We use motion sensors for smooth navigation and accurate direction tracking during your route.",
-        "UIBackgroundModes": ["location", "fetch"]
+        "NSLocationWhenInUseUsageDescription": "EditedRoute needs your location to show your position on the map and provide turn-by-turn navigation to your destinations.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "EditedRoute uses your location in the background to provide continuous navigation and automatically advance to the next stop on your route.",
+        "NSMotionUsageDescription": "EditedRoute uses motion sensors to provide smooth compass heading and accurate direction tracking during navigation.",
+        "UIBackgroundModes": ["location", "fetch"],
+        "NSPrivacyAccessedAPITypes": [
+          {
+            "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryLocation",
+            "NSPrivacyAccessedAPITypeReasons": [
+              "NSPrivacyAccessedAPILocationReasonNavigationTracking"
+            ]
+          }
+        ]
       },
       "config": {
         "googleMapsApiKey": "AIzaSyAmRHr2EKOelTqx4HZbmyxPrXnUk1zvbII"
@@ -29,11 +42,16 @@
     },
     "android": {
       "icon": "./assets/images/editedroute-android.png",
-      "permissions": ["ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION"],
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION"
+      ],
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#FFFFFF",
         "foregroundImage": "./assets/images/editedroute-android.png"
       },
+      "versionCode": 38,
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "package": "com.kirills.editedroute",

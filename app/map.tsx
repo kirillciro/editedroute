@@ -7,6 +7,7 @@ import {
   StatusBar,
   Keyboard,
   Alert,
+  AppState,
 } from "react-native";
 import MapView, { PROVIDER_GOOGLE, Polyline, Marker } from "react-native-maps";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -66,6 +67,7 @@ export default function MapScreen() {
   const [cameraPitch, setCameraPitch] = useState(0); // STAGE 4.3: Camera tilt angle
   const [currentStopIndex, setCurrentStopIndex] = useState<number>(-1); // STAGE 5.1: Track current stop (-1 = none)
   const [isInArrivalZone, setIsInArrivalZone] = useState(false); // STAGE 5.2: Within 10-20m of destination
+  const [appState, setAppState] = useState(AppState.currentState); // STAGE 9.1: Track app state
   const [distance, setDistance] = useState(0);
   const [duration, setDuration] = useState(0);
   const navigationSteps = useRef<any[]>([]);
@@ -175,18 +177,18 @@ export default function MapScreen() {
 
   // STAGE 4.1: Smooth heading interpolation with frame-based updates
   useEffect(() => {
-    if (!isSensorsActive) return;
+    if (!isSensorsActive || appState !== "active") return; // STAGE 9.1: Pause when backgrounded
 
     const intervalId = setInterval(() => {
       setSmoothedHeading((prev) => smoothHeadingValue(rawHeading, prev));
     }, 16); // 60 FPS
 
     return () => clearInterval(intervalId);
-  }, [rawHeading, isSensorsActive]);
+  }, [rawHeading, isSensorsActive, appState]);
 
   // STAGE 4.2: Camera bearing smoothing with speed-based easing
   useEffect(() => {
-    if (!isNavigating) return;
+    if (!isNavigating || appState !== "active") return; // STAGE 9.1: Pause when backgrounded
 
     const speed = userLocation?.speed || 0; // m/s
     const speedKmh = speed * 3.6;
@@ -220,12 +222,13 @@ export default function MapScreen() {
     }, 50); // 20 FPS for camera (smoother, less battery intensive)
 
     return () => clearInterval(intervalId);
-  }, [smoothedHeading, isNavigating, userLocation?.speed]);
+  }, [smoothedHeading, isNavigating, userLocation?.speed, appState]);
 
   // STAGE 4.3: Dynamic camera pitch based on speed
   useEffect(() => {
-    if (!isNavigating) {
-      setCameraPitch(0); // Reset to 0 when not navigating
+    if (!isNavigating || appState !== "active") {
+      // STAGE 9.1: Pause when backgrounded
+      setCameraPitch(0); // Reset to 0 when not navigating or backgrounded
       return;
     }
 
@@ -256,7 +259,7 @@ export default function MapScreen() {
     }, 50); // 20 FPS
 
     return () => clearInterval(intervalId);
-  }, [isNavigating, userLocation?.speed]);
+  }, [isNavigating, userLocation?.speed, appState]);
 
   // Auto-center on user's current location when map loads
   useEffect(() => {
@@ -269,7 +272,7 @@ export default function MapScreen() {
           });
           const { latitude, longitude } = location.coords;
           setUserLocation({ latitude, longitude, speed: 0 });
-          
+
           // Center map on user location
           mapRef.current?.animateToRegion(
             {
@@ -288,6 +291,23 @@ export default function MapScreen() {
 
     getCenterOnUserLocation();
   }, []); // Run once on mount
+
+  // STAGE 9.1: Battery optimization - suspend updates when app is backgrounded
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (nextAppState) => {
+      if (appState.match(/active/) && nextAppState === "background") {
+        console.log("App backgrounded - suspending sensors and animations");
+        // Sensors will continue but animations will pause
+      } else if (appState === "background" && nextAppState === "active") {
+        console.log("App foregrounded - resuming");
+      }
+      setAppState(nextAppState);
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [appState]);
 
   // Calculate route with Google Directions API
   // STAGE 5.3: Filter and prioritize navigation instructions

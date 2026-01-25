@@ -352,8 +352,20 @@ export default function MapScreen() {
     return filtered;
   };
 
-  const calculateRoute = async (destLat: number, destLng: number) => {
-    if (!userLocation) return;
+  const calculateRoute = async (
+    destLat: number,
+    destLng: number,
+    retryCount = 0,
+  ) => {
+    if (!userLocation) {
+      // STAGE 9.2: Handle missing location gracefully
+      Alert.alert(
+        "Location Required",
+        "Please enable location services to calculate route.",
+        [{ text: "OK" }],
+      );
+      return;
+    }
 
     try {
       const origin = `${userLocation.latitude},${userLocation.longitude}`;
@@ -370,8 +382,35 @@ export default function MapScreen() {
 
       const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${destination}${waypointsParam}&key=${process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY}`;
 
-      const response = await fetch(url);
+      // STAGE 9.2: Add timeout to prevent hanging
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
+      const response = await fetch(url, {
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
       const data = await response.json();
+
+      // STAGE 9.2: Handle API errors gracefully
+      if (data.status === "ZERO_RESULTS") {
+        Alert.alert(
+          "No Route Found",
+          "Unable to find a route to this destination. Please try a different location.",
+          [{ text: "OK" }],
+        );
+        return;
+      }
+
+      if (data.status !== "OK" && data.status !== "ZERO_RESULTS") {
+        throw new Error(`API Error: ${data.status}`);
+      }
 
       if (data.routes && data.routes.length > 0) {
         const route = data.routes[0];
@@ -411,9 +450,37 @@ export default function MapScreen() {
           animated: true,
         });
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error fetching route:", error);
-      Alert.alert("Error", "Failed to fetch route");
+
+      // STAGE 9.2: Smart retry logic for network failures
+      if (
+        retryCount < 2 &&
+        (error.name === "AbortError" || error.message?.includes("network"))
+      ) {
+        console.log(
+          `Retrying route calculation... (attempt ${retryCount + 1})`,
+        );
+        // Exponential backoff: 1s, 2s
+        setTimeout(
+          () => {
+            calculateRoute(destLat, destLng, retryCount + 1);
+          },
+          1000 * Math.pow(2, retryCount),
+        );
+        return;
+      }
+
+      // Show user-friendly error message
+      const errorMessage =
+        error.name === "AbortError"
+          ? "Request timed out. Please check your internet connection and try again."
+          : "Unable to calculate route. Please check your internet connection.";
+
+      Alert.alert("Connection Error", errorMessage, [
+        { text: "Cancel", style: "cancel" },
+        { text: "Retry", onPress: () => calculateRoute(destLat, destLng, 0) },
+      ]);
     }
   };
 
@@ -422,9 +489,23 @@ export default function MapScreen() {
       // Request location permissions
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== "granted") {
+        // STAGE 9.2: Better permission error handling
         Alert.alert(
-          "Permission Denied",
-          "Location permission is required to show your location on the map.",
+          "Location Permission Required",
+          "This app needs location access to show your position and provide navigation. Please enable location permissions in Settings.",
+          [
+            { text: "Cancel", style: "cancel" },
+            {
+              text: "Open Settings",
+              onPress: () => {
+                // User can manually open settings
+                Alert.alert(
+                  "Manual Action Required",
+                  "Please enable location permissions in iOS Settings > Privacy > Location Services",
+                );
+              },
+            },
+          ],
         );
         return;
       }
@@ -447,9 +528,20 @@ export default function MapScreen() {
         },
         1000,
       );
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error getting location:", error);
-      Alert.alert("Error", "Failed to get your location. Please try again.");
+
+      // STAGE 9.2: Specific error messages
+      let errorMessage = "Failed to get your location. Please try again.";
+      if (error.code === "E_LOCATION_TIMEOUT") {
+        errorMessage =
+          "Location request timed out. Make sure you have a clear view of the sky and try again.";
+      } else if (error.code === "E_LOCATION_UNAVAILABLE") {
+        errorMessage =
+          "Location services are unavailable. Please check your device settings.";
+      }
+
+      Alert.alert("Location Error", errorMessage, [{ text: "OK" }]);
     }
   };
 

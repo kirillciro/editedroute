@@ -55,6 +55,7 @@ export function useLocationTracking(
     null,
   );
   const previousLocation = useRef<LatLng | null>(null);
+  const previousHeading = useRef<number>(0);
 
   // Kalman filter state for noise reduction
   const kalmanState = useRef({
@@ -79,6 +80,25 @@ export function useLocationTracking(
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 
     return R * c;
+  };
+
+  /**
+   * Calculate bearing (direction of movement) between two coordinates
+   */
+  const calculateBearing = (from: LatLng, to: LatLng): number => {
+    const φ1 = (from.latitude * Math.PI) / 180;
+    const φ2 = (to.latitude * Math.PI) / 180;
+    const Δλ = ((to.longitude - from.longitude) * Math.PI) / 180;
+
+    const y = Math.sin(Δλ) * Math.cos(φ2);
+    const x =
+      Math.cos(φ1) * Math.sin(φ2) -
+      Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+
+    const θ = Math.atan2(y, x);
+    const bearing = ((θ * 180) / Math.PI + 360) % 360;
+
+    return bearing;
   };
 
   /**
@@ -260,15 +280,35 @@ export function useLocationTracking(
         (location) => {
           const { latitude, longitude } = location.coords;
           const currentSpeed = location.coords.speed || 0;
-          const currentHeading = location.coords.heading || 0;
           const currentAccuracy = location.coords.accuracy || 10;
 
           // Raw location
           const rawLoc: LatLng = { latitude, longitude };
           setRawLocation(rawLoc);
           setSpeed(currentSpeed);
-          setHeading(currentHeading);
           setAccuracy(currentAccuracy);
+
+          // Calculate heading from movement direction (not compass)
+          let calculatedHeading = previousHeading.current;
+          
+          if (previousLocation.current && currentSpeed > 0.5) {
+            // Only update heading if moving (>0.5 m/s or ~1.8 km/h)
+            // This prevents erratic heading changes when stationary
+            const movementDistance = calculateDistance(previousLocation.current, rawLoc);
+            
+            // Only calculate new bearing if we've moved at least 2 meters
+            // This filters out GPS noise
+            if (movementDistance > 2) {
+              calculatedHeading = calculateBearing(previousLocation.current, rawLoc);
+              previousHeading.current = calculatedHeading;
+            }
+          } else if (location.coords.heading !== null && location.coords.heading !== undefined && location.coords.heading >= 0) {
+            // Fall back to GPS heading if available and we're not calculating from movement
+            calculatedHeading = location.coords.heading;
+            previousHeading.current = calculatedHeading;
+          }
+          
+          setHeading(calculatedHeading);
 
           // Apply Kalman filter
           let filteredLocation = applyKalmanFilter(rawLoc, currentAccuracy);
@@ -279,7 +319,7 @@ export function useLocationTracking(
           // Calculate look-ahead
           const lookAheadLocation = calculateLookAhead(
             filteredLocation,
-            currentHeading,
+            calculatedHeading,
             currentSpeed,
           );
 

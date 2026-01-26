@@ -36,6 +36,7 @@ export default function DriveScreen() {
   const {
     location,
     rawLocation,
+    heading: gpsHeading,
     speed,
     accuracy,
     isTracking,
@@ -51,7 +52,7 @@ export default function DriveScreen() {
     lookAheadDistance: 100,
   });
 
-  // Sensor fusion for smooth 60 FPS rotation
+  // Sensor fusion for smooth 60 FPS rotation (backup for when GPS heading unavailable)
   const { fusedHeading, isCalibrated, startFusion, stopFusion } =
     useSensorFusion();
 
@@ -62,6 +63,37 @@ export default function DriveScreen() {
   const [currentStopIndex, setCurrentStopIndex] = useState(0);
   const [mapReady, setMapReady] = useState(false);
   const [navigationStarted, setNavigationStarted] = useState(false);
+  const [displayHeading, setDisplayHeading] = useState(0); // Smoothed heading for display
+
+  /**
+   * Smooth heading interpolation for arrow rotation
+   */
+  useEffect(() => {
+    if (!navigationStarted || speed < 0.5) {
+      // Don't update heading if not moving to avoid jitter
+      return;
+    }
+
+    const intervalId = setInterval(() => {
+      setDisplayHeading((prev) => {
+        const target = gpsHeading;
+        
+        // Calculate shortest path
+        let delta = target - prev;
+        if (delta > 180) delta -= 360;
+        if (delta < -180) delta += 360;
+        
+        // Smooth interpolation - faster when moving faster
+        const speedKmh = speed * 3.6;
+        const easingFactor = speedKmh > 20 ? 0.3 : 0.15; // Faster easing at higher speeds
+        
+        const result = prev + delta * easingFactor;
+        return ((result % 360) + 360) % 360;
+      });
+    }, 50); // 20 FPS for smooth rotation
+
+    return () => clearInterval(intervalId);
+  }, [gpsHeading, navigationStarted, speed]);
 
   /**
    * Start navigation manually
@@ -112,7 +144,7 @@ export default function DriveScreen() {
         ...rawLocation,
         timestamp: Date.now(),
         speed,
-        heading: fusedHeading,
+        heading: gpsHeading,
         accuracy,
       });
     }
@@ -131,13 +163,13 @@ export default function DriveScreen() {
             longitude: location.longitude._value,
           },
           pitch: 60,
-          heading: fusedHeading,
+          heading: displayHeading,
           zoom: 18,
         },
         { duration: 300 },
       );
     }
-  }, [location, fusedHeading, mapReady, navigationStarted]);
+  }, [location, displayHeading, mapReady, navigationStarted]);
 
   /**
    * Check if arrived at current stop
@@ -293,7 +325,7 @@ export default function DriveScreen() {
             }}
             anchor={{ x: 0.5, y: 0.5 }}
             flat={true}
-            rotation={fusedHeading}
+            rotation={displayHeading}
           >
             <View style={styles.userMarker}>
               <View style={styles.userMarkerInner} />

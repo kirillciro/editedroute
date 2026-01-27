@@ -2,7 +2,7 @@
   "expo": {
     "name": "EditedRoute",
     "slug": "EditedRoute",
-    "version": "38.0.0",
+    "version": "38.0.1",
     "orientation": "portrait",
     "icon": "./assets/images/app-icon.png",
     "scheme": "editedroute",
@@ -16,7 +16,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.kirills.editedroute",
-      "buildNumber": "38",
+      "buildNumber": "39",
       "icon": "./assets/images/app-icon.png",
       "associatedDomains": [
         "applinks:willing-unicorn-16.clerk.accounts.dev",
@@ -51,7 +51,7 @@
         "backgroundColor": "#FFFFFF",
         "foregroundImage": "./assets/images/editedroute-android.png"
       },
-      "versionCode": 38,
+      "versionCode": 39,
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "package": "com.kirills.editedroute",

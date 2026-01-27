@@ -1,15 +1,8 @@
 import React, { useEffect, useState } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  StyleSheet,
-  TouchableOpacity,
-} from "react-native";
+import { View, Text, ScrollView, StyleSheet } from "react-native";
 import { useTheme } from "@/context/ThemeContext";
-import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
 // import AsyncStorage from "@react-native-async-storage/async-storage";
-import { router } from "expo-router";
 
 /**
  * Stage 7.1: Driver Profile & Stats Dashboard
@@ -47,7 +40,6 @@ export default function StatsScreen() {
     avgSpeed: 0,
     timeSaved: 0,
   });
-  const [trips, setTrips] = useState<TripData[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -59,7 +51,6 @@ export default function StatsScreen() {
       // TODO: Replace with AsyncStorage after native rebuild
       // For now, starting with empty data
       const loadedTrips: TripData[] = [];
-      setTrips(loadedTrips);
 
       // Calculate aggregated stats
       const totalTrips = loadedTrips.length;
@@ -100,24 +91,6 @@ export default function StatsScreen() {
       return `${hours}h ${minutes}m`;
     }
     return `${minutes}m`;
-  };
-
-  const formatDate = (dateString: string): string => {
-    const date = new Date(dateString);
-    const today = new Date();
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-
-    if (date.toDateString() === today.toDateString()) {
-      return "Today";
-    } else if (date.toDateString() === yesterday.toDateString()) {
-      return "Yesterday";
-    } else {
-      return date.toLocaleDateString("en-US", {
-        month: "short",
-        day: "numeric",
-      });
-    }
   };
 
   if (loading) {

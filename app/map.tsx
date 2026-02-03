@@ -7,6 +7,7 @@ import {
   Alert,
   AppState,
   Keyboard,
+  Platform,
   StatusBar,
   StyleSheet,
   Text,
@@ -85,7 +86,125 @@ export default function MapScreen() {
   const [smoothedHeading, setSmoothedHeading] = useState(0); // STAGE 4.1: Interpolated value
   const [cameraBearing, setCameraBearing] = useState(0); // STAGE 4.2: Camera rotation
   const [cameraPitch, setCameraPitch] = useState(0); // STAGE 4.3: Camera tilt angle
-  const [cameraZoom, setCameraZoom] = useState(0.003); // Dynamic zoom delta: smaller = closer zoom
+  // Google Maps camera zoom LEVEL (not region delta). Typical navigation zooms are ~15..19.
+  const [cameraZoom, setCameraZoom] = useState(17.2);
+
+  // Google Maps-style layers & overlays
+  type MapLayerType = "standard" | "satellite" | "hybrid" | "terrain";
+  const [mapType, setMapType] = useState<MapLayerType>("standard");
+  const [showsTraffic, setShowsTraffic] = useState(false);
+  const [showsBuildings, setShowsBuildings] = useState(true);
+  const [showsIndoors, setShowsIndoors] = useState(false);
+  const [showsCompass, setShowsCompass] = useState(true);
+
+  const cycleMapType = () => {
+    const cycle: MapLayerType[] =
+      Platform.OS === "android"
+        ? ["standard", "satellite", "hybrid", "terrain"]
+        : ["standard", "satellite", "hybrid"];
+    const idx = Math.max(0, cycle.indexOf(mapType));
+    setMapType(cycle[(idx + 1) % cycle.length]);
+  };
+
+  type CameraApplyMode = "auto" | "setCamera" | "animate0" | "animate160";
+  const [showCameraDebug, setShowCameraDebug] = useState(false);
+  // NOTE: __DEV__ is false in archives/TestFlight builds, so we support an
+  // on-device unlock gesture to enable debug UI.
+  const [cameraDebugUnlocked, setCameraDebugUnlocked] = useState(__DEV__);
+  const [cameraApplyMode, setCameraApplyMode] =
+    useState<CameraApplyMode>("animate160");
+  const cameraApplyModeRef = useRef<CameraApplyMode>("animate160");
+  useEffect(() => {
+    cameraApplyModeRef.current = cameraApplyMode;
+  }, [cameraApplyMode]);
+
+  const unlockCameraDebug = () => {
+    setCameraDebugUnlocked(true);
+    setShowCameraDebug(true);
+  };
+
+  type CameraTuningPreset = "balanced" | "smooth" | "snappy";
+  const [cameraTuningPreset, setCameraTuningPreset] =
+    useState<CameraTuningPreset>("balanced");
+  const navCameraTuningRef = useRef({
+    applyMinIntervalMs: 1000 / 30,
+    tauCenterS: 0.35,
+    tauHeadingS: 0.25,
+    tauPitchS: 0.35,
+    tauZoomS: 0.45,
+    centerDeadbandM: 0.25,
+    bearingDeadbandDeg: 0.4,
+    pitchDeadbandDeg: 0.3,
+    zoomDeadband: 0.02,
+  });
+  useEffect(() => {
+    if (cameraTuningPreset === "smooth") {
+      navCameraTuningRef.current = {
+        applyMinIntervalMs: 1000 / 24,
+        tauCenterS: 0.55,
+        tauHeadingS: 0.35,
+        tauPitchS: 0.55,
+        tauZoomS: 0.7,
+        centerDeadbandM: 0.35,
+        bearingDeadbandDeg: 0.6,
+        pitchDeadbandDeg: 0.45,
+        zoomDeadband: 0.03,
+      };
+      return;
+    }
+    if (cameraTuningPreset === "snappy") {
+      navCameraTuningRef.current = {
+        applyMinIntervalMs: 1000 / 40,
+        tauCenterS: 0.22,
+        tauHeadingS: 0.18,
+        tauPitchS: 0.24,
+        tauZoomS: 0.3,
+        centerDeadbandM: 0.18,
+        bearingDeadbandDeg: 0.3,
+        pitchDeadbandDeg: 0.22,
+        zoomDeadband: 0.015,
+      };
+      return;
+    }
+
+    // balanced
+    navCameraTuningRef.current = {
+      applyMinIntervalMs: 1000 / 30,
+      tauCenterS: 0.35,
+      tauHeadingS: 0.25,
+      tauPitchS: 0.35,
+      tauZoomS: 0.45,
+      centerDeadbandM: 0.25,
+      bearingDeadbandDeg: 0.4,
+      pitchDeadbandDeg: 0.3,
+      zoomDeadband: 0.02,
+    };
+  }, [cameraTuningPreset]);
+
+  const [cameraDebugSnapshot, setCameraDebugSnapshot] = useState<{
+    now: number;
+    mode: CameraApplyMode;
+    preset: CameraTuningPreset;
+    hasSetCamera: boolean;
+    hasAnimateCamera: boolean;
+    navViewMode: NavViewMode;
+    holdMs: number;
+    speedMps: number;
+    distToTurnM: number;
+    zoomTarget: number;
+    bearingTarget: number;
+    pitchTarget: number;
+    centerTarget?: { latitude: number; longitude: number };
+    centerApplied?: { latitude: number; longitude: number };
+    zoomApplied?: number;
+    headingApplied?: number;
+    pitchApplied?: number;
+    mapType?: MapLayerType;
+    showsTraffic?: boolean;
+    showsBuildings?: boolean;
+    showsIndoors?: boolean;
+    showsCompass?: boolean;
+  } | null>(null);
 
   // Google-like navigation camera modes:
   // - follow: camera follows marker + heading
@@ -97,6 +216,53 @@ export default function MapScreen() {
   useEffect(() => {
     navViewModeRef.current = navViewMode;
   }, [navViewMode]);
+
+  useEffect(() => {
+    if (!cameraDebugUnlocked) return;
+    if (!showCameraDebug) return;
+
+    const id = setInterval(() => {
+      const now = Date.now();
+      const mapAny = mapRef.current as any;
+      const cur = navCameraCurrentRef.current;
+      setCameraDebugSnapshot({
+        now,
+        mode: cameraApplyModeRef.current,
+        preset: cameraTuningPreset,
+        hasSetCamera: !!mapAny?.setCamera,
+        hasAnimateCamera: !!mapAny?.animateCamera,
+        navViewMode,
+        holdMs: Math.max(0, navCameraHoldUntilRef.current - now),
+        speedMps: navSpeedRef.current || userLocationRef.current?.speed || 0,
+        distToTurnM: distanceToNextTurnRef.current || 0,
+        zoomTarget: cameraZoomRef.current || 0,
+        bearingTarget: cameraBearingRef.current || 0,
+        pitchTarget: cameraPitchRef.current || 0,
+        centerTarget: navTarget.current || undefined,
+        centerApplied: cur?.center,
+        zoomApplied: cur?.zoom,
+        headingApplied: cur?.heading,
+        pitchApplied: cur?.pitch,
+        mapType,
+        showsTraffic,
+        showsBuildings,
+        showsIndoors,
+        showsCompass,
+      });
+    }, 250);
+
+    return () => clearInterval(id);
+  }, [
+    cameraDebugUnlocked,
+    showCameraDebug,
+    navViewMode,
+    cameraTuningPreset,
+    mapType,
+    showsTraffic,
+    showsBuildings,
+    showsIndoors,
+    showsCompass,
+  ]);
   const [currentStopIndex, setCurrentStopIndex] = useState<number>(-1); // STAGE 5.1: Track current stop (-1 = none)
   const [isInArrivalZone, setIsInArrivalZone] = useState(false); // STAGE 5.2: Within 10-20m of destination
   const [appState, setAppState] = useState(AppState.currentState); // STAGE 9.1: Track app state
@@ -119,14 +285,13 @@ export default function MapScreen() {
   const currentHeading = useRef(0);
   const calibrationSamples = useRef<number[]>([]);
   const isCalibrated = useRef(false);
-  const lastHeadingCameraUpdateRef = useRef<number>(0);
 
   // Camera follow needs live values inside an animation loop (refs), because
   // navCurrent is updated via RAF without triggering React renders.
   const navCameraRafIdRef = useRef<number | null>(null);
   const cameraBearingRef = useRef<number>(0);
   const cameraPitchRef = useRef<number>(0);
-  const cameraZoomRef = useRef<number>(0.003);
+  const cameraZoomRef = useRef<number>(17.2);
   const isInArrivalZoneRef = useRef<boolean>(false);
   const userLocationRef = useRef<{
     latitude: number;
@@ -203,10 +368,7 @@ export default function MapScreen() {
 
     if (m.includes("ramp-left") || (m.includes("exit") && t.includes("left")))
       return "keep-left";
-    if (
-      m.includes("ramp-right") ||
-      (m.includes("exit") && t.includes("right"))
-    )
+    if (m.includes("ramp-right") || (m.includes("exit") && t.includes("right")))
       return "keep-right";
 
     if (t.includes("continue") || t.includes("head") || t.includes("straight"))
@@ -318,6 +480,24 @@ export default function MapScreen() {
     null,
   );
 
+  // Navigation camera smoothing: avoid overlapping animations and micro-jitter.
+  const navCameraHoldUntilRef = useRef<number>(0);
+  const navCameraCurrentRef = useRef<{
+    center: { latitude: number; longitude: number };
+    heading: number;
+    pitch: number;
+    zoom: number;
+  } | null>(null);
+  const navCameraLastFrameAtRef = useRef<number>(0);
+  const navCameraLastApplyAtRef = useRef<number>(0);
+  const navLastCameraCenterRef = useRef<{
+    latitude: number;
+    longitude: number;
+  } | null>(null);
+  const navLastCameraBearingAppliedRef = useRef<number>(0);
+  const navLastCameraPitchAppliedRef = useRef<number>(0);
+  const navLastCameraZoomAppliedRef = useRef<number>(17.2);
+
   // Directions API call guards (reduce quota burn when "off route")
   const offRouteSinceRef = useRef<number | null>(null);
   const lastRouteRecalcAtRef = useRef<number>(0);
@@ -371,11 +551,34 @@ export default function MapScreen() {
     lastClosestRouteIndexRef.current = 0;
   }, [routeCoordinates]);
 
-  const NAV_RENDER_TAU_SECONDS = 0.18; // lower = snappier, higher = smoother
-  const NAV_PREDICT_SECONDS = 0.55;
+  const NAV_RENDER_TAU_SECONDS = 0.12; // lower = snappier, higher = smoother
+
+  const computeNavPredictSeconds = (speedMps: number) => {
+    const speedKmh = (speedMps || 0) * 3.6;
+    // Low speed: less prediction to avoid wobble. Higher speed: more prediction to reduce perceived lag.
+    if (speedKmh <= 10) return 0.25;
+    if (speedKmh <= 40) return 0.25 + ((speedKmh - 10) / 30) * 0.35; // 0.25..0.60
+    if (speedKmh <= 90) return 0.6 + ((speedKmh - 40) / 50) * 0.25; // 0.60..0.85
+    return 0.9;
+  };
 
   const lerp = (start: number, end: number, alpha: number) =>
     start + (end - start) * alpha;
+
+  const angleDeltaDegrees = (toDeg: number, fromDeg: number) => {
+    const t = ((toDeg % 360) + 360) % 360;
+    const f = ((fromDeg % 360) + 360) % 360;
+    let d = t - f;
+    if (d > 180) d -= 360;
+    if (d < -180) d += 360;
+    return d;
+  };
+
+  const distanceMetersBetween = (
+    a: { latitude: number; longitude: number },
+    b: { latitude: number; longitude: number },
+  ) =>
+    calculateDistance(a.latitude, a.longitude, b.latitude, b.longitude) * 1000;
 
   const applyPrediction = (
     anchor: { latitude: number; longitude: number },
@@ -423,9 +626,12 @@ export default function MapScreen() {
     const speedKmh = (speedMps || 0) * 3.6;
     let base = 70;
     if (speedKmh <= 10) base = 70;
-    else if (speedKmh <= 30) base = 70 + ((speedKmh - 10) / 20) * 40; // 70..110
-    else if (speedKmh <= 60) base = 110 + ((speedKmh - 30) / 30) * 60; // 110..170
-    else if (speedKmh <= 100) base = 170 + ((speedKmh - 60) / 40) * 30; // 170..200
+    else if (speedKmh <= 30)
+      base = 70 + ((speedKmh - 10) / 20) * 40; // 70..110
+    else if (speedKmh <= 60)
+      base = 110 + ((speedKmh - 30) / 30) * 60; // 110..170
+    else if (speedKmh <= 100)
+      base = 170 + ((speedKmh - 60) / 40) * 30; // 170..200
     else base = 200;
 
     // Turn anticipation: as we approach the next maneuver, reduce look-ahead so
@@ -462,21 +668,21 @@ export default function MapScreen() {
     if (tier === 0) {
       return {
         accuracy: Location.Accuracy.BestForNavigation,
-        timeInterval: 2000,
-        distanceInterval: 10,
+        timeInterval: 1500,
+        distanceInterval: 8,
       };
     }
     if (tier === 2) {
       return {
         accuracy: Location.Accuracy.BestForNavigation,
-        timeInterval: 800,
-        distanceInterval: 5,
+        timeInterval: 500,
+        distanceInterval: 2,
       };
     }
     return {
       accuracy: Location.Accuracy.BestForNavigation,
-      timeInterval: 1200,
-      distanceInterval: 6,
+      timeInterval: 800,
+      distanceInterval: 4,
     };
   };
 
@@ -492,23 +698,60 @@ export default function MapScreen() {
       computeNavLookAheadMeters(pending.speedMps),
     );
 
-    mapRef.current.animateToRegion(
-      {
-        latitude: lookAheadCenter.latitude,
-        longitude: lookAheadCenter.longitude,
-        latitudeDelta: 0.0038,
-        longitudeDelta: 0.0038,
-      },
-      700,
-    );
+    const durationMs = 650;
 
-    mapRef.current.animateCamera(
-      {
-        heading: smoothedHeading,
+    // Hold the follow loop while this animation plays to prevent camera fights.
+    navCameraHoldUntilRef.current = Date.now() + durationMs + 150;
+
+    const bearing = cameraBearing || smoothedHeading;
+    const zoom = cameraZoomRef.current || 17.2;
+
+    // Google Maps-style: animate a single CameraPosition (center + bearing + tilt + zoom).
+    const mapAny = mapRef.current as any;
+    const mode = cameraApplyModeRef.current;
+    const animateDuration = mode === "animate160" ? 160 : 0;
+
+    if (mode === "setCamera" && mapAny?.setCamera) {
+      mapAny.setCamera({
+        center: lookAheadCenter,
+        heading: bearing,
         pitch: 45,
-      },
-      { duration: 700 },
-    );
+        zoom,
+      });
+    } else if (
+      (mode === "animate0" || mode === "animate160") &&
+      mapAny?.animateCamera
+    ) {
+      mapAny.animateCamera(
+        { center: lookAheadCenter, heading: bearing, pitch: 45, zoom },
+        { duration: animateDuration },
+      );
+    } else if (mapAny?.setCamera) {
+      mapAny.setCamera({
+        center: lookAheadCenter,
+        heading: bearing,
+        pitch: 45,
+        zoom,
+      });
+    } else if (mapAny?.animateCamera) {
+      mapAny.animateCamera(
+        { center: lookAheadCenter, heading: bearing, pitch: 45, zoom },
+        { duration: durationMs },
+      );
+    }
+
+    // Seed last-known applied state so the follow loop doesn't immediately "snap back".
+    navLastCameraCenterRef.current = lookAheadCenter;
+    navLastCameraBearingAppliedRef.current = bearing;
+    navLastCameraPitchAppliedRef.current = 45;
+    navLastCameraZoomAppliedRef.current = zoom;
+    navCameraCurrentRef.current = {
+      center: lookAheadCenter,
+      heading: bearing,
+      pitch: 45,
+      zoom,
+    };
+    navCameraLastFrameAtRef.current = 0;
 
     didApplyNavCameraFixRef.current = true;
     pendingNavCameraFixRef.current = null;
@@ -551,7 +794,7 @@ export default function MapScreen() {
           target,
           smoothedHeading,
           navSpeedRef.current,
-          NAV_PREDICT_SECONDS,
+          computeNavPredictSeconds(navSpeedRef.current || 0),
         );
 
         const nextLat = lerp(current.latitude, predicted.latitude, alpha);
@@ -841,7 +1084,10 @@ export default function MapScreen() {
     if (!isNavigating || appState !== "active") return;
     if (!mapReady || !mapRef.current) return;
 
-    const MIN_INTERVAL_MS = 90; // smooth follow without overworking the map
+    // Google Maps-style camera controller:
+    // - compute a target CameraPosition
+    // - smooth it every frame
+    // - apply via setCamera (no overlapping animations)
     let cancelled = false;
 
     const tick = () => {
@@ -853,66 +1099,187 @@ export default function MapScreen() {
         return;
       }
 
+      // During explicit snaps/recenters, avoid fighting the ongoing animation.
+      if (Date.now() < navCameraHoldUntilRef.current) {
+        // Reset frame timing so we don't get a big dt spike after a hold.
+        navCameraLastFrameAtRef.current = 0;
+        navCameraRafIdRef.current = requestAnimationFrame(tick);
+        return;
+      }
+
       const now = Date.now();
-      if (now - lastHeadingCameraUpdateRef.current >= MIN_INTERVAL_MS) {
-        lastHeadingCameraUpdateRef.current = now;
+      const tuning = navCameraTuningRef.current;
+      const APPLY_MIN_INTERVAL_MS = tuning.applyMinIntervalMs;
+      const TAU_CENTER_S = tuning.tauCenterS;
+      const TAU_HEADING_S = tuning.tauHeadingS;
+      const TAU_PITCH_S = tuning.tauPitchS;
+      const TAU_ZOOM_S = tuning.tauZoomS;
+      const CENTER_DEADBAND_M = tuning.centerDeadbandM;
+      const BEARING_DEADBAND_DEG = tuning.bearingDeadbandDeg;
+      const PITCH_DEADBAND_DEG = tuning.pitchDeadbandDeg;
+      const ZOOM_DEADBAND = tuning.zoomDeadband;
+      const destNow = destinationRef.current;
+      const inArrival = isInArrivalZoneRef.current && destNow;
 
-        const destNow = destinationRef.current;
-        const inArrival = isInArrivalZoneRef.current && destNow;
-
-        const fallback = userLocationRef.current
-          ? {
-              latitude: userLocationRef.current.latitude,
-              longitude: userLocationRef.current.longitude,
-            }
-          : null;
-
-        const base = inArrival
-          ? { latitude: destNow!.latitude, longitude: destNow!.longitude }
-          : navCurrent.current || navTarget.current || fallback;
-
-        if (base) {
-          const bearing = cameraBearingRef.current;
-          let pitch = inArrival ? 45 : cameraPitchRef.current;
-          let zoomDelta = cameraZoomRef.current;
-
-          const speedMps = inArrival
-            ? 0
-            : navSpeedRef.current || userLocationRef.current?.speed || 0;
-
-          const d = distanceToNextTurnRef.current;
-          if (!inArrival && Number.isFinite(d) && d > 0) {
-            // Very close to the maneuver: go more top-down and slightly closer.
-            if (d < 60) {
-              pitch = Math.min(pitch, 32);
-              zoomDelta = Math.min(zoomDelta, 0.0028);
-            } else if (d < 120) {
-              pitch = Math.min(pitch, 38);
-            }
+      const fallback = userLocationRef.current
+        ? {
+            latitude: userLocationRef.current.latitude,
+            longitude: userLocationRef.current.longitude,
           }
+        : null;
 
-          const center = inArrival
-            ? base
-            : offsetCoordinate(
-                base,
-                bearing,
-                computeNavLookAheadMeters(speedMps),
+      const base = inArrival
+        ? { latitude: destNow!.latitude, longitude: destNow!.longitude }
+        : navCurrent.current || navTarget.current || fallback;
+
+      if (base) {
+        const bearingTarget = cameraBearingRef.current;
+        const speedMps = inArrival
+          ? 0
+          : navSpeedRef.current || userLocationRef.current?.speed || 0;
+
+        let pitchTarget = inArrival ? 45 : Math.max(30, cameraPitchRef.current);
+        let zoomTarget = cameraZoomRef.current || 17.2;
+
+        const d = distanceToNextTurnRef.current;
+        if (!inArrival && Number.isFinite(d) && d > 0) {
+          // Close to the maneuver: slightly more top-down and slightly closer.
+          if (d < 60) {
+            pitchTarget = Math.min(pitchTarget, 32);
+            zoomTarget = Math.max(zoomTarget, 18.0);
+          } else if (d < 120) {
+            pitchTarget = Math.min(pitchTarget, 38);
+          }
+        }
+
+        const centerTarget = inArrival
+          ? base
+          : offsetCoordinate(
+              base,
+              bearingTarget,
+              computeNavLookAheadMeters(speedMps),
+            );
+
+        const lastFrameAt = navCameraLastFrameAtRef.current || now;
+        const dtS = Math.min(0.25, Math.max(0.001, (now - lastFrameAt) / 1000));
+        navCameraLastFrameAtRef.current = now;
+
+        const alphaCenter = 1 - Math.exp(-dtS / TAU_CENTER_S);
+        const alphaHeading = 1 - Math.exp(-dtS / TAU_HEADING_S);
+        const alphaPitch = 1 - Math.exp(-dtS / TAU_PITCH_S);
+        const alphaZoom = 1 - Math.exp(-dtS / TAU_ZOOM_S);
+
+        if (!navCameraCurrentRef.current) {
+          navCameraCurrentRef.current = {
+            center: centerTarget,
+            heading: bearingTarget,
+            pitch: pitchTarget,
+            zoom: zoomTarget,
+          };
+        } else {
+          const cur = navCameraCurrentRef.current;
+          const nextCenter = {
+            latitude: lerp(
+              cur.center.latitude,
+              centerTarget.latitude,
+              alphaCenter,
+            ),
+            longitude: lerp(
+              cur.center.longitude,
+              centerTarget.longitude,
+              alphaCenter,
+            ),
+          };
+          const headingDelta = angleDeltaDegrees(bearingTarget, cur.heading);
+          const nextHeading =
+            (((cur.heading + headingDelta * alphaHeading) % 360) + 360) % 360;
+          const nextPitch = lerp(cur.pitch, pitchTarget, alphaPitch);
+          const nextZoom = lerp(cur.zoom, zoomTarget, alphaZoom);
+
+          navCameraCurrentRef.current = {
+            center: nextCenter,
+            heading: nextHeading,
+            pitch: nextPitch,
+            zoom: nextZoom,
+          };
+        }
+
+        const curNow = navCameraCurrentRef.current;
+        if (
+          curNow &&
+          now - navCameraLastApplyAtRef.current >= APPLY_MIN_INTERVAL_MS
+        ) {
+          const lastCenter = navLastCameraCenterRef.current;
+          const centerMoveM = lastCenter
+            ? distanceMetersBetween(lastCenter, curNow.center)
+            : Infinity;
+          const bearingDelta = Math.abs(
+            angleDeltaDegrees(
+              curNow.heading,
+              navLastCameraBearingAppliedRef.current,
+            ),
+          );
+          const pitchDelta = Math.abs(
+            curNow.pitch - navLastCameraPitchAppliedRef.current,
+          );
+          const zoomDelta = Math.abs(
+            curNow.zoom - navLastCameraZoomAppliedRef.current,
+          );
+
+          if (
+            centerMoveM >= CENTER_DEADBAND_M ||
+            bearingDelta >= BEARING_DEADBAND_DEG ||
+            pitchDelta >= PITCH_DEADBAND_DEG ||
+            zoomDelta >= ZOOM_DEADBAND
+          ) {
+            navCameraLastApplyAtRef.current = now;
+            const mapAny = mapRef.current as any;
+            const mode = cameraApplyModeRef.current;
+            const animateDuration = mode === "animate160" ? 160 : 0;
+
+            if (mode === "setCamera" && mapAny?.setCamera) {
+              mapAny.setCamera({
+                center: curNow.center,
+                heading: curNow.heading,
+                pitch: curNow.pitch,
+                zoom: curNow.zoom,
+              });
+            } else if (
+              (mode === "animate0" || mode === "animate160") &&
+              mapAny?.animateCamera
+            ) {
+              mapAny.animateCamera(
+                {
+                  center: curNow.center,
+                  heading: curNow.heading,
+                  pitch: curNow.pitch,
+                  zoom: curNow.zoom,
+                },
+                { duration: animateDuration },
               );
-
-          mapRef.current?.animateToRegion(
-            {
-              latitude: center.latitude,
-              longitude: center.longitude,
-              latitudeDelta: zoomDelta,
-              longitudeDelta: zoomDelta,
-            },
-            MIN_INTERVAL_MS,
-          );
-
-          mapRef.current?.animateCamera(
-            { heading: bearing, pitch },
-            { duration: MIN_INTERVAL_MS },
-          );
+            } else if (mapAny?.setCamera) {
+              mapAny.setCamera({
+                center: curNow.center,
+                heading: curNow.heading,
+                pitch: curNow.pitch,
+                zoom: curNow.zoom,
+              });
+            } else if (mapAny?.animateCamera) {
+              mapAny.animateCamera(
+                {
+                  center: curNow.center,
+                  heading: curNow.heading,
+                  pitch: curNow.pitch,
+                  zoom: curNow.zoom,
+                },
+                { duration: 0 },
+              );
+            }
+            navLastCameraCenterRef.current = curNow.center;
+            navLastCameraBearingAppliedRef.current = curNow.heading;
+            navLastCameraPitchAppliedRef.current = curNow.pitch;
+            navLastCameraZoomAppliedRef.current = curNow.zoom;
+          }
         }
       }
 
@@ -944,6 +1311,7 @@ export default function MapScreen() {
 
     if (!base) {
       setNavViewMode("follow");
+      navViewModeRef.current = "follow";
       return;
     }
 
@@ -953,11 +1321,15 @@ export default function MapScreen() {
       speedMps: navSpeedRef.current || userLocationRef.current?.speed || 0,
     };
     didApplyNavCameraFixRef.current = false;
+    // Give the recenter animation a moment to run without the follow loop fighting it.
+    navCameraHoldUntilRef.current = Date.now() + 850;
     setNavViewMode("follow");
+    navViewModeRef.current = "follow";
   };
 
   const requestNavOverview = () => {
     setNavViewMode("overview");
+    navViewModeRef.current = "overview";
     const points = routeCoordinatesRef.current;
     if (points && points.length > 1) {
       mapRef.current?.fitToCoordinates(points, {
@@ -971,52 +1343,50 @@ export default function MapScreen() {
   // distance-to-next-maneuver zoom-out, so long straight segments zoom out more.
   useEffect(() => {
     if (!isNavigating || appState !== "active") {
-      setCameraZoom(0.0042); // Reset when not navigating
+      setCameraZoom(16.8); // Reset when not navigating
       return;
     }
 
     const speed = userLocation?.speed || 0; // m/s
     const speedKmh = speed * 3.6;
 
-    // Calculate target zoom delta based on speed
-    // Smaller delta = closer zoom.
-    // Tuned a bit closer than before.
-    let speedZoomDelta = 0.0024; // Very close zoom for street names
+    // Target Google zoom LEVEL (higher = closer).
+    let speedZoom = 18.3;
     if (speedKmh <= 30) {
-      speedZoomDelta = 0.0024 + (speedKmh / 30) * 0.0044; // 0.0024..0.0068
+      speedZoom = 18.3 - (speedKmh / 30) * 1.0; // 18.3..17.3
     } else if (speedKmh <= 60) {
-      speedZoomDelta = 0.0068 + ((speedKmh - 30) / 30) * 0.0097; // 0.0068..0.0165
+      speedZoom = 17.3 - ((speedKmh - 30) / 30) * 0.8; // 17.3..16.5
     } else {
-      speedZoomDelta = 0.0165; // Base highway zoom-out
+      speedZoom = 16.5; // Base highway zoom-out
     }
 
     // Zoom out more when the next maneuver is far away.
-    // distanceToNextTurn is in meters.
     const d = Number.isFinite(distanceToNextTurn) ? distanceToNextTurn : 0;
-    let distanceZoomDelta = 0;
+    let distanceZoom: number | null = null;
     if (d >= 300 && d < 1000) {
-      distanceZoomDelta = 0.007 + ((d - 300) / 700) * 0.006; // 0.007..0.013
+      distanceZoom = 16.8 - ((d - 300) / 700) * 0.6; // 16.8..16.2
     } else if (d >= 1000 && d < 3000) {
-      distanceZoomDelta = 0.013 + ((d - 1000) / 2000) * 0.010; // 0.013..0.023
+      distanceZoom = 16.2 - ((d - 1000) / 2000) * 0.7; // 16.2..15.5
     } else if (d >= 3000) {
-      distanceZoomDelta = 0.023 + Math.min((d - 3000) / 5000, 1) * 0.010; // 0.023..0.033
+      distanceZoom = 15.5 - Math.min((d - 3000) / 5000, 1) * 0.5; // 15.5..15.0
     }
 
-    let targetZoomDelta = Math.max(speedZoomDelta, distanceZoomDelta);
+    let targetZoom =
+      distanceZoom != null ? Math.min(speedZoom, distanceZoom) : speedZoom;
 
     // Turn anticipation: zoom in a bit as we approach the next maneuver.
     // (Keeps the junction readable like Google Maps.)
     if (speedKmh <= 110 && d > 0 && d < 180) {
       const t = Math.max(0, Math.min(1, d / 180));
-      const turnZoomDelta = 0.0024 + t * 0.0034; // 0.0024..0.0058
-      targetZoomDelta = Math.min(targetZoomDelta, turnZoomDelta);
+      const turnZoom = 18.5 - t * 0.8; // 18.5..17.7
+      targetZoom = Math.max(targetZoom, turnZoom);
     }
 
     // Smooth transition to target zoom
     const intervalId = setInterval(() => {
       setCameraZoom((prev) => {
-        const delta = targetZoomDelta - prev;
-        const easingFactor = 0.05; // Slow and smooth zoom transitions
+        const delta = targetZoom - prev;
+        const easingFactor = 0.07; // Slow and smooth zoom transitions
         return prev + delta * easingFactor;
       });
     }, 100); // 10 FPS for zoom (subtle changes)
@@ -1048,7 +1418,7 @@ export default function MapScreen() {
           );
         }
       } catch (error) {
-        console.log("Could not get initial location:", error);
+        if (__DEV__) console.log("Could not get initial location:", error);
       }
     };
 
@@ -1059,10 +1429,11 @@ export default function MapScreen() {
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (nextAppState) => {
       if (appState.match(/active/) && nextAppState === "background") {
-        console.log("App backgrounded - suspending sensors and animations");
+        if (__DEV__)
+          console.log("App backgrounded - suspending sensors and animations");
         // Sensors will continue but animations will pause
       } else if (appState === "background" && nextAppState === "active") {
-        console.log("App foregrounded - resuming");
+        if (__DEV__) console.log("App foregrounded - resuming");
       }
       setAppState(nextAppState);
     });
@@ -1314,9 +1685,10 @@ export default function MapScreen() {
         retryCount < 2 &&
         (error.name === "AbortError" || error.message?.includes("network"))
       ) {
-        console.log(
-          `Retrying route calculation... (attempt ${retryCount + 1})`,
-        );
+        if (__DEV__)
+          console.log(
+            `Retrying route calculation... (attempt ${retryCount + 1})`,
+          );
         // Exponential backoff: 1s, 2s
         setTimeout(
           () => {
@@ -1668,26 +2040,28 @@ export default function MapScreen() {
         didApplyNavCameraFixRef.current = false;
         pendingNavCameraFixRef.current = null;
         setNavViewMode("follow");
+        navViewModeRef.current = "follow";
         setIsNavigating(true);
         setCurrentStopIndex(stops.length > 0 ? 0 : -1);
         setIsInArrivalZone(false);
 
-        // Set initial navigation zoom (this state is a delta, not a Google "zoom" level)
-        // Slightly tighter to match Google/Waze feel.
-        setCameraZoom(0.0038);
+        // Set initial navigation zoom LEVEL (Google-like).
+        setCameraZoom(17.2);
 
-        // Immediately move camera into navigation view (don't wait for the first watchPosition tick)
-        try {
-          const initial = await Location.getCurrentPositionAsync({
-            accuracy: Location.Accuracy.BestForNavigation,
-          });
-          const { latitude, longitude, speed } = initial.coords;
+        // Immediately move camera into navigation view (like pressing the location button)
+        // Prefer cached/last-known location first so we don't block on GPS.
+        const seedNavAndCamera = (
+          coords: { latitude: number; longitude: number },
+          speedMps: number,
+          durationMs: number,
+        ) => {
+          const { latitude, longitude } = coords;
 
-          setUserLocation({ latitude, longitude, speed: speed || 0 });
+          setUserLocation({ latitude, longitude, speed: speedMps });
 
           // Seed smooth marker system right away
-          navSpeedRef.current = speed || 0;
-          navLatestSpeedMpsRef.current = speed || 0;
+          navSpeedRef.current = speedMps;
+          navLatestSpeedMpsRef.current = speedMps;
           navTarget.current = { latitude, longitude };
           if (!navCurrent.current) {
             navCurrent.current = { latitude, longitude };
@@ -1703,42 +2077,182 @@ export default function MapScreen() {
 
           // Immediate camera move (or queue it until map is ready)
           const base = { latitude, longitude };
+          const bearing = cameraBearing || smoothedHeading;
           const lookAheadCenter = offsetCoordinate(
             base,
-            cameraBearing || smoothedHeading,
-            computeNavLookAheadMeters(speed || 0),
+            bearing,
+            computeNavLookAheadMeters(speedMps),
           );
-          if (mapReady && mapRef.current) {
-            mapRef.current.animateToRegion(
-              {
-                latitude: lookAheadCenter.latitude,
-                longitude: lookAheadCenter.longitude,
-                latitudeDelta: 0.0038,
-                longitudeDelta: 0.0038,
-              },
-              700,
-            );
 
-            // NOTE: animateToRegion does not reliably apply heading/pitch.
-            // Use animateCamera for true heading-up rotation.
-            mapRef.current.animateCamera(
-              {
-                heading: smoothedHeading,
+          if (mapReady && mapRef.current) {
+            // Prevent the follow loop from fighting this explicit snap.
+            navCameraHoldUntilRef.current = Date.now() + durationMs + 150;
+
+            const zoom = cameraZoomRef.current || 17.2;
+
+            // Google Maps-style: single CameraPosition animation (no region-based zoom).
+            const mapAny = mapRef.current as any;
+            const mode = cameraApplyModeRef.current;
+            const animateDuration = mode === "animate160" ? 160 : 0;
+            if (mode === "setCamera" && mapAny?.setCamera) {
+              mapAny.setCamera({
+                center: lookAheadCenter,
+                heading: bearing,
                 pitch: 45,
-              },
-              { duration: 700 },
-            );
+                zoom,
+              });
+            } else if (
+              (mode === "animate0" || mode === "animate160") &&
+              mapAny?.animateCamera
+            ) {
+              mapAny.animateCamera(
+                {
+                  center: lookAheadCenter,
+                  heading: bearing,
+                  pitch: 45,
+                  zoom,
+                },
+                { duration: animateDuration || durationMs },
+              );
+            } else if (mapAny?.setCamera) {
+              mapAny.setCamera({
+                center: lookAheadCenter,
+                heading: bearing,
+                pitch: 45,
+                zoom,
+              });
+            } else if (mapAny?.animateCamera) {
+              mapAny.animateCamera(
+                {
+                  center: lookAheadCenter,
+                  heading: bearing,
+                  pitch: 45,
+                  zoom,
+                },
+                { duration: durationMs },
+              );
+            }
+
+            // Seed camera state so the follow loop continues smoothly.
+            navLastCameraCenterRef.current = lookAheadCenter;
+            navLastCameraBearingAppliedRef.current = bearing;
+            navLastCameraPitchAppliedRef.current = 45;
+            navLastCameraZoomAppliedRef.current = zoom;
+            navCameraCurrentRef.current = {
+              center: lookAheadCenter,
+              heading: bearing,
+              pitch: 45,
+              zoom,
+            };
+            navCameraLastFrameAtRef.current = 0;
             didApplyNavCameraFixRef.current = true;
+            pendingNavCameraFixRef.current = null;
           } else {
             pendingNavCameraFixRef.current = {
               latitude,
               longitude,
-              speedMps: speed || 0,
+              speedMps,
             };
+            didApplyNavCameraFixRef.current = false;
+          }
+        };
+
+        const maybeSnapFromExisting = () => {
+          const base =
+            navCurrent.current ||
+            navTarget.current ||
+            (userLocationRef.current
+              ? {
+                  latitude: userLocationRef.current.latitude,
+                  longitude: userLocationRef.current.longitude,
+                }
+              : null);
+          if (!base) return;
+
+          const speedMps =
+            navSpeedRef.current || userLocationRef.current?.speed || 0;
+          seedNavAndCamera(base, speedMps, 550);
+        };
+
+        // 1) Snap immediately from whatever we already know (prevents “press location first”).
+        try {
+          maybeSnapFromExisting();
+        } catch (e) {
+          if (__DEV__)
+            console.log("Immediate nav camera snap (existing) failed:", e);
+        }
+
+        // 2) Try last-known position (fast, cached)
+        try {
+          const last = await Location.getLastKnownPositionAsync({
+            maxAge: 20000,
+            requiredAccuracy: 80,
+          });
+          if (last?.coords) {
+            const distM =
+              userLocationRef.current?.latitude != null &&
+              userLocationRef.current?.longitude != null
+                ? calculateDistance(
+                    userLocationRef.current.latitude,
+                    userLocationRef.current.longitude,
+                    last.coords.latitude,
+                    last.coords.longitude,
+                  ) * 1000
+                : Infinity;
+
+            // Only resnap if we haven't snapped yet, or if cached is meaningfully different.
+            if (!didApplyNavCameraFixRef.current || distM > 12) {
+              seedNavAndCamera(
+                {
+                  latitude: last.coords.latitude,
+                  longitude: last.coords.longitude,
+                },
+                last.coords.speed || 0,
+                450,
+              );
+            }
+          }
+        } catch (e) {
+          if (__DEV__) console.log("Last-known nav camera snap failed:", e);
+        }
+
+        // 3) Finally, get a fresh GPS fix (slower but most accurate)
+        try {
+          const initial = await Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.BestForNavigation,
+          });
+          const { latitude, longitude, speed } = initial.coords;
+
+          const distM =
+            userLocationRef.current?.latitude != null &&
+            userLocationRef.current?.longitude != null
+              ? calculateDistance(
+                  userLocationRef.current.latitude,
+                  userLocationRef.current.longitude,
+                  latitude,
+                  longitude,
+                ) * 1000
+              : Infinity;
+
+          if (!didApplyNavCameraFixRef.current || distM > 12) {
+            seedNavAndCamera(
+              { latitude, longitude },
+              speed || 0,
+              didApplyNavCameraFixRef.current ? 350 : 700,
+            );
+          } else {
+            // Still seed marker/speed so smoothing starts correctly.
+            setUserLocation({ latitude, longitude, speed: speed || 0 });
+            navSpeedRef.current = speed || 0;
+            navLatestSpeedMpsRef.current = speed || 0;
+            navTarget.current = { latitude, longitude };
+            if (!navCurrent.current) {
+              navCurrent.current = { latitude, longitude };
+            }
           }
         } catch (e) {
           // If the one-shot fix fails, navigation will still start and camera will follow on watchPosition.
-          console.log("Initial navigation camera fix failed:", e);
+          if (__DEV__) console.log("Initial navigation camera fix failed:", e);
         }
 
         const onNavLocationUpdate = async (
@@ -1832,9 +2346,10 @@ export default function MapScreen() {
               if (canRecalc) {
                 routeRecalcInFlightRef.current = true;
                 lastRouteRecalcAtRef.current = now;
-                console.log(
-                  `Off route by ${distanceToRouteMeters.toFixed(0)}m - recalculating (throttled)...`,
-                );
+                if (__DEV__)
+                  console.log(
+                    `Off route by ${distanceToRouteMeters.toFixed(0)}m - recalculating (throttled)...`,
+                  );
                 try {
                   await calculateRoute(destNow.latitude, destNow.longitude, 0, {
                     origin: { latitude, longitude },
@@ -1869,7 +2384,8 @@ export default function MapScreen() {
 
               // Auto-advance when within 10m of current stop
               if (distToStop < 0.01) {
-                console.log(`Arrived at stop: ${currentStop.address}`);
+                if (__DEV__)
+                  console.log(`Arrived at stop: ${currentStop.address}`);
                 setCurrentStopIndex(targetStopIndex + 1);
               }
             }
@@ -1886,7 +2402,7 @@ export default function MapScreen() {
 
             // Enter arrival zone when within 20m
             if (distToDestination < 0.02 && !isInArrivalZone) {
-              console.log("Entering arrival zone (< 20m)");
+              if (__DEV__) console.log("Entering arrival zone (< 20m)");
               setIsInArrivalZone(true);
             }
           }
@@ -2097,7 +2613,10 @@ export default function MapScreen() {
     if (stops.length > 0 && currentStopIndex < stops.length) {
       const nextIndex = currentStopIndex === -1 ? 0 : currentStopIndex + 1;
       setCurrentStopIndex(nextIndex);
-      console.log(`Manually advanced to stop ${nextIndex + 1}/${stops.length}`);
+      if (__DEV__)
+        console.log(
+          `Manually advanced to stop ${nextIndex + 1}/${stops.length}`,
+        );
     }
   };
 
@@ -2169,6 +2688,10 @@ export default function MapScreen() {
         provider={PROVIDER_GOOGLE}
         style={styles.map}
         initialRegion={initialRegion}
+        mapType={mapType}
+        showsTraffic={showsTraffic}
+        showsBuildings={showsBuildings}
+        showsIndoors={showsIndoors}
         onMapReady={() => setMapReady(true)}
         onPanDrag={() => {
           if (isNavigating && navViewModeRef.current === "follow") {
@@ -2177,7 +2700,7 @@ export default function MapScreen() {
         }}
         showsUserLocation={!!userLocation}
         showsMyLocationButton={false}
-        showsCompass={true}
+        showsCompass={showsCompass}
         showsScale={true}
         rotateEnabled={true}
         pitchEnabled={true}
@@ -2207,7 +2730,7 @@ export default function MapScreen() {
             <View style={styles.arrowMarker}>
               <MaterialCommunityIcons
                 name="navigation"
-                size={32}
+                size={44}
                 color="#4285F4"
               />
             </View>
@@ -2291,6 +2814,79 @@ export default function MapScreen() {
       <View
         style={[styles.rightButtonsContainer, { bottom: insets.bottom + 100 }]}
       >
+        {/* Camera debug toggle (always visible; first tap unlocks in release builds) */}
+        <TouchableOpacity
+          style={styles.cameraDebugToggle}
+          onPress={() => {
+            if (!cameraDebugUnlocked) {
+              unlockCameraDebug();
+              return;
+            }
+            setShowCameraDebug((v) => !v);
+          }}
+        >
+          <Text style={styles.cameraDebugToggleText}>DBG</Text>
+        </TouchableOpacity>
+
+        {/* Layers (Google Maps-style): Standard/Satellite/etc */}
+        <TouchableOpacity
+          style={styles.myLocationButton}
+          onPress={cycleMapType}
+          onLongPress={unlockCameraDebug}
+          delayLongPress={700}
+        >
+          <MaterialCommunityIcons
+            name={mapType === "standard" ? "layers-outline" : "layers"}
+            size={24}
+            color="#1A73E8"
+          />
+        </TouchableOpacity>
+
+        {/* Overlay toggles for quick A/B (unlockable on-device) */}
+        {cameraDebugUnlocked && (
+          <TouchableOpacity
+            style={[
+              styles.myLocationButton,
+              showsTraffic && styles.myLocationButtonActive,
+            ]}
+            onPress={() => setShowsTraffic((v) => !v)}
+          >
+            <MaterialCommunityIcons
+              name="traffic-light"
+              size={22}
+              color="#1A73E8"
+            />
+          </TouchableOpacity>
+        )}
+
+        {cameraDebugUnlocked && (
+          <TouchableOpacity
+            style={[
+              styles.myLocationButton,
+              showsBuildings && styles.myLocationButtonActive,
+            ]}
+            onPress={() => setShowsBuildings((v) => !v)}
+          >
+            <MaterialCommunityIcons name="city" size={22} color="#1A73E8" />
+          </TouchableOpacity>
+        )}
+
+        {cameraDebugUnlocked && (
+          <TouchableOpacity
+            style={[
+              styles.myLocationButton,
+              showsCompass && styles.myLocationButtonActive,
+            ]}
+            onPress={() => setShowsCompass((v) => !v)}
+          >
+            <MaterialCommunityIcons
+              name="compass-outline"
+              size={22}
+              color="#1A73E8"
+            />
+          </TouchableOpacity>
+        )}
+
         {/* Navigation controls (Google-style) */}
         {isNavigating && routeCoordinates.length > 1 && (
           <TouchableOpacity
@@ -2356,6 +2952,130 @@ export default function MapScreen() {
         </TouchableOpacity>
       </View>
 
+      {/* Camera Debug Panel */}
+      {cameraDebugUnlocked && showCameraDebug && (
+        <View
+          style={[
+            styles.cameraDebugPanel,
+            { right: 16, bottom: insets.bottom + 170 },
+          ]}
+        >
+          <View style={styles.cameraDebugHeader}>
+            <Text style={styles.cameraDebugTitle}>Camera Debug</Text>
+            <TouchableOpacity onPress={() => setShowCameraDebug(false)}>
+              <Ionicons name="close" size={18} color="#fff" />
+            </TouchableOpacity>
+          </View>
+
+          <Text style={styles.cameraDebugLine}>
+            Apply: {cameraApplyMode} | Preset: {cameraTuningPreset}
+          </Text>
+          {!!cameraDebugSnapshot && (
+            <>
+              <Text style={styles.cameraDebugLine}>
+                layer:{cameraDebugSnapshot.mapType} | traffic:
+                {cameraDebugSnapshot.showsTraffic ? "on" : "off"} | 3D:
+                {cameraDebugSnapshot.showsBuildings ? "on" : "off"} | indoor:
+                {cameraDebugSnapshot.showsIndoors ? "on" : "off"}
+              </Text>
+              <Text style={styles.cameraDebugLine}>
+                setCamera:{cameraDebugSnapshot.hasSetCamera ? "Y" : "N"} |
+                animateCamera:
+                {cameraDebugSnapshot.hasAnimateCamera ? "Y" : "N"} | hold:
+                {Math.round(cameraDebugSnapshot.holdMs)}ms
+              </Text>
+              <Text style={styles.cameraDebugLine}>
+                nav:{cameraDebugSnapshot.navViewMode} | v:
+                {(cameraDebugSnapshot.speedMps * 3.6).toFixed(0)} km/h | d:
+                {Math.round(cameraDebugSnapshot.distToTurnM)}m
+              </Text>
+              <Text style={styles.cameraDebugLine}>
+                tgt z:{cameraDebugSnapshot.zoomTarget.toFixed(2)} h:
+                {cameraDebugSnapshot.bearingTarget.toFixed(0)} p:
+                {cameraDebugSnapshot.pitchTarget.toFixed(0)}
+              </Text>
+              <Text style={styles.cameraDebugLine}>
+                app z:{(cameraDebugSnapshot.zoomApplied ?? 0).toFixed(2)} h:
+                {(cameraDebugSnapshot.headingApplied ?? 0).toFixed(0)} p:
+                {(cameraDebugSnapshot.pitchApplied ?? 0).toFixed(0)}
+              </Text>
+            </>
+          )}
+
+          <View style={styles.cameraDebugButtonsRow}>
+            <TouchableOpacity
+              style={styles.cameraDebugButton}
+              onPress={() => {
+                const order: (typeof cameraApplyMode)[] = [
+                  "auto",
+                  "setCamera",
+                  "animate0",
+                  "animate160",
+                ];
+                const idx = Math.max(0, order.indexOf(cameraApplyMode));
+                setCameraApplyMode(order[(idx + 1) % order.length]);
+              }}
+            >
+              <Text style={styles.cameraDebugButtonText}>Cycle Apply</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.cameraDebugButton}
+              onPress={() => {
+                const order: (typeof cameraTuningPreset)[] = [
+                  "balanced",
+                  "smooth",
+                  "snappy",
+                ];
+                const idx = Math.max(0, order.indexOf(cameraTuningPreset));
+                setCameraTuningPreset(order[(idx + 1) % order.length]);
+              }}
+            >
+              <Text style={styles.cameraDebugButtonText}>Cycle Preset</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.cameraDebugButtonsRow}>
+            <TouchableOpacity
+              style={styles.cameraDebugButton}
+              onPress={cycleMapType}
+            >
+              <Text style={styles.cameraDebugButtonText}>Cycle Layer</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.cameraDebugButton}
+              onPress={() => setShowsTraffic((v) => !v)}
+            >
+              <Text style={styles.cameraDebugButtonText}>
+                Traffic {showsTraffic ? "On" : "Off"}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.cameraDebugButtonsRow}>
+            <TouchableOpacity
+              style={styles.cameraDebugButton}
+              onPress={() => setShowsBuildings((v) => !v)}
+            >
+              <Text style={styles.cameraDebugButtonText}>
+                3D {showsBuildings ? "On" : "Off"}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.cameraDebugButton}
+              onPress={() => setShowsIndoors((v) => !v)}
+            >
+              <Text style={styles.cameraDebugButtonText}>
+                Indoor {showsIndoors ? "On" : "Off"}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          <Text style={styles.cameraDebugHint}>
+            Tip: try Apply=animate160 if setCamera feels “steppy”.
+          </Text>
+        </View>
+      )}
+
       {/* Stops Panel */}
       {showStopsPanel && !isNavigating && (
         <View style={[styles.stopsPanel, { bottom: insets.bottom + 180 }]}>
@@ -2420,7 +3140,7 @@ export default function MapScreen() {
       )}
 
       {/* Stage Info */}
-      {!isNavigating && !destination && (
+      {__DEV__ && (
         <View style={[styles.stageInfo, { bottom: insets.bottom + 20 }]}>
           <Text style={styles.stageText}>STAGE 6: Full Navigation ✓</Text>
           <Text style={styles.stageSubtext}>Search destination to begin</Text>
@@ -2435,7 +3155,10 @@ export default function MapScreen() {
               name={
                 isInArrivalZone
                   ? "flag-checkered"
-                  : maneuverToIconName(currentManeuver, currentInstruction)
+                  : maneuverToIconName(
+                      currentManeuver,
+                      currentInstruction || "",
+                    )
               }
               size={32}
               color={isInArrivalZone ? "#34A853" : "#4285F4"}
@@ -2480,7 +3203,8 @@ export default function MapScreen() {
                         <View
                           style={[
                             styles.lanePill,
-                            (laneHint === "keep-right" || laneHint === "right") &&
+                            (laneHint === "keep-right" ||
+                              laneHint === "right") &&
                               styles.lanePillActive,
                           ]}
                         />
@@ -2662,11 +3386,13 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   arrowMarker: {
-    width: 40,
-    height: 40,
+    width: 60,
+    height: 60,
     backgroundColor: "#fff",
-    opacity: 0.9,
-    borderRadius: 20,
+    opacity: 0.98,
+    borderRadius: 30,
+    borderWidth: 1,
+    borderColor: "#E8EAED",
     justifyContent: "center",
     alignItems: "center",
     elevation: 5,
@@ -2692,6 +3418,81 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.15,
     shadowRadius: 4,
     elevation: 5,
+  },
+  myLocationButtonActive: {
+    backgroundColor: "#E8F0FE",
+  },
+  cameraDebugToggle: {
+    width: 48,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: "#111",
+    justifyContent: "center",
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 6,
+  },
+  cameraDebugToggleText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.5,
+  },
+  cameraDebugPanel: {
+    position: "absolute",
+    width: 260,
+    backgroundColor: "rgba(17, 17, 17, 0.92)",
+    borderRadius: 12,
+    padding: 12,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 12,
+  },
+  cameraDebugHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
+  cameraDebugTitle: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  cameraDebugLine: {
+    color: "#fff",
+    fontSize: 12,
+    opacity: 0.92,
+    marginBottom: 4,
+  },
+  cameraDebugButtonsRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 8,
+  },
+  cameraDebugButton: {
+    flex: 1,
+    backgroundColor: "rgba(255,255,255,0.12)",
+    borderRadius: 10,
+    paddingVertical: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cameraDebugButtonText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  cameraDebugHint: {
+    color: "#fff",
+    fontSize: 11,
+    opacity: 0.75,
+    marginTop: 10,
   },
   stopsButton: {
     width: 48,

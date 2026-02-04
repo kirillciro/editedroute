@@ -1,8 +1,9 @@
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import * as Location from "expo-location";
 import { router } from "expo-router";
 import { Gyroscope, Magnetometer } from "expo-sensors";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   AppState,
@@ -266,6 +267,28 @@ export default function MapScreen() {
   const [currentStopIndex, setCurrentStopIndex] = useState<number>(-1); // STAGE 5.1: Track current stop (-1 = none)
   const [isInArrivalZone, setIsInArrivalZone] = useState(false); // STAGE 5.2: Within 10-20m of destination
   const [appState, setAppState] = useState(AppState.currentState); // STAGE 9.1: Track app state
+
+  // Prevent the OS from dimming/locking the screen during turn-by-turn navigation.
+  // This avoids the “screen goes dark after a few minutes” behavior while driving.
+  const keepAwakeActiveRef = useRef(false);
+  useEffect(() => {
+    const tag = "EditedRouteNavigation";
+    const shouldKeepAwake = isNavigating && appState === "active";
+    if (shouldKeepAwake === keepAwakeActiveRef.current) return;
+    keepAwakeActiveRef.current = shouldKeepAwake;
+    if (shouldKeepAwake) {
+      activateKeepAwakeAsync(tag).catch(() => undefined);
+    } else {
+      deactivateKeepAwake(tag).catch(() => undefined);
+    }
+  }, [isNavigating, appState]);
+
+  useEffect(() => {
+    const tag = "EditedRouteNavigation";
+    return () => {
+      deactivateKeepAwake(tag).catch(() => undefined);
+    };
+  }, []);
   const [distance, setDistance] = useState(0);
   const [duration, setDuration] = useState(0);
   const navigationSteps = useRef<any[]>([]);
@@ -517,6 +540,10 @@ export default function MapScreen() {
   } | null>(null);
   const directionsCooldownUntilRef = useRef<number>(0);
   const lastOverQueryAlertAtRef = useRef<number>(0);
+  const routeTotalDurationSecRef = useRef<number>(0);
+  const routePolylineCumulativeMetersRef = useRef<number[]>([]);
+  const routePolylineTotalMetersRef = useRef<number>(0);
+  const lastDynamicEtaMinutesRef = useRef<number | null>(null);
   const directionsCacheRef = useRef<
     Map<
       string,
@@ -525,6 +552,7 @@ export default function MapScreen() {
         points: { latitude: number; longitude: number }[];
         steps: any[];
         eta: string;
+        totalDurationSec: number;
       }
     >
   >(new Map());
@@ -545,11 +573,12 @@ export default function MapScreen() {
     destinationRef.current = destination;
   }, [destination]);
 
-  useEffect(() => {
-    routeCoordinatesRef.current = routeCoordinates;
-    // Reset hint when route changes significantly
-    lastClosestRouteIndexRef.current = 0;
-  }, [routeCoordinates]);
+  const formatEtaFromSeconds = useCallback((totalSeconds: number) => {
+    const seconds = Math.max(0, Math.floor(totalSeconds || 0));
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    return hours > 0 ? `${hours}h ${minutes}m` : `${minutes} min`;
+  }, []);
 
   const NAV_RENDER_TAU_SECONDS = 0.12; // lower = snappier, higher = smoother
 
@@ -574,11 +603,48 @@ export default function MapScreen() {
     return d;
   };
 
-  const distanceMetersBetween = (
-    a: { latitude: number; longitude: number },
-    b: { latitude: number; longitude: number },
-  ) =>
-    calculateDistance(a.latitude, a.longitude, b.latitude, b.longitude) * 1000;
+  const distanceMetersBetween = useCallback(
+    (
+      a: { latitude: number; longitude: number },
+      b: { latitude: number; longitude: number },
+    ) => {
+      // Inline haversine in meters (kept independent of calculateDistance to avoid
+      // declaration-order issues with hook dependency arrays).
+      const R = 6371000; // meters
+      const dLat = ((b.latitude - a.latitude) * Math.PI) / 180;
+      const dLon = ((b.longitude - a.longitude) * Math.PI) / 180;
+      const lat1 = (a.latitude * Math.PI) / 180;
+      const lat2 = (b.latitude * Math.PI) / 180;
+      const s1 = Math.sin(dLat / 2);
+      const s2 = Math.sin(dLon / 2);
+      const h = s1 * s1 + Math.cos(lat1) * Math.cos(lat2) * s2 * s2;
+      return 2 * R * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+    },
+    [],
+  );
+
+  useEffect(() => {
+    routeCoordinatesRef.current = routeCoordinates;
+    // Reset hint when route changes significantly
+    lastClosestRouteIndexRef.current = 0;
+
+    // Precompute cumulative distance along the polyline for fast remaining-distance queries.
+    if (routeCoordinates.length < 2) {
+      routePolylineCumulativeMetersRef.current = [];
+      routePolylineTotalMetersRef.current = 0;
+      return;
+    }
+    const cumulative: number[] = new Array(routeCoordinates.length);
+    cumulative[0] = 0;
+    for (let i = 1; i < routeCoordinates.length; i++) {
+      cumulative[i] =
+        cumulative[i - 1] +
+        distanceMetersBetween(routeCoordinates[i - 1], routeCoordinates[i]);
+    }
+    routePolylineCumulativeMetersRef.current = cumulative;
+    routePolylineTotalMetersRef.current =
+      cumulative[cumulative.length - 1] || 0;
+  }, [routeCoordinates, distanceMetersBetween]);
 
   const applyPrediction = (
     anchor: { latitude: number; longitude: number },
@@ -898,98 +964,174 @@ export default function MapScreen() {
   };
 
   // Haversine formula for distance calculation
-  const calculateDistance = (
-    lat1: number,
-    lon1: number,
-    lat2: number,
-    lon2: number,
-  ): number => {
-    const R = 6371; // Earth's radius in km
-    const dLat = ((lat2 - lat1) * Math.PI) / 180;
-    const dLon = ((lon2 - lon1) * Math.PI) / 180;
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos((lat1 * Math.PI) / 180) *
-        Math.cos((lat2 * Math.PI) / 180) *
-        Math.sin(dLon / 2) *
-        Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-  };
+  const calculateDistance = useCallback(
+    (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+      const R = 6371; // Earth's radius in km
+      const dLat = ((lat2 - lat1) * Math.PI) / 180;
+      const dLon = ((lon2 - lon1) * Math.PI) / 180;
+      const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos((lat1 * Math.PI) / 180) *
+          Math.cos((lat2 * Math.PI) / 180) *
+          Math.sin(dLon / 2) *
+          Math.sin(dLon / 2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c;
+    },
+    [],
+  );
 
-  const closestPointOnSegmentMeters = (
-    p: { latitude: number; longitude: number },
-    a: { latitude: number; longitude: number },
-    b: { latitude: number; longitude: number },
-  ): { point: { latitude: number; longitude: number }; distanceM: number } => {
-    // Local equirectangular projection (good enough for short distances)
-    const originLat = a.latitude;
-    const originLng = a.longitude;
-    const latRad = (originLat * Math.PI) / 180;
-    const metersPerDegLat = 111320;
-    const metersPerDegLng = 111320 * Math.cos(latRad);
+  const closestPointOnSegmentMeters = useCallback(
+    (
+      p: { latitude: number; longitude: number },
+      a: { latitude: number; longitude: number },
+      b: { latitude: number; longitude: number },
+    ): {
+      point: { latitude: number; longitude: number };
+      distanceM: number;
+    } => {
+      // Local equirectangular projection (good enough for short distances)
+      const originLat = a.latitude;
+      const originLng = a.longitude;
+      const latRad = (originLat * Math.PI) / 180;
+      const metersPerDegLat = 111320;
+      const metersPerDegLng = 111320 * Math.cos(latRad);
 
-    const bx = (b.longitude - originLng) * metersPerDegLng;
-    const by = (b.latitude - originLat) * metersPerDegLat;
-    const px = (p.longitude - originLng) * metersPerDegLng;
-    const py = (p.latitude - originLat) * metersPerDegLat;
+      const bx = (b.longitude - originLng) * metersPerDegLng;
+      const by = (b.latitude - originLat) * metersPerDegLat;
+      const px = (p.longitude - originLng) * metersPerDegLng;
+      const py = (p.latitude - originLat) * metersPerDegLat;
 
-    const ab2 = bx * bx + by * by;
-    if (ab2 < 1e-6) {
-      const d = Math.hypot(px, py);
-      return { point: a, distanceM: d };
-    }
-
-    let t = (px * bx + py * by) / ab2;
-    t = Math.max(0, Math.min(1, t));
-
-    const projX = t * bx;
-    const projY = t * by;
-    const projLat = originLat + projY / metersPerDegLat;
-    const projLng = originLng + projX / metersPerDegLng;
-    const dist = Math.hypot(px - projX, py - projY);
-
-    return {
-      point: { latitude: projLat, longitude: projLng },
-      distanceM: dist,
-    };
-  };
-
-  const closestPointOnPolylineMeters = (
-    p: { latitude: number; longitude: number },
-    poly: { latitude: number; longitude: number }[],
-    indexHint: number,
-  ): {
-    point: { latitude: number; longitude: number };
-    distanceM: number;
-    index: number;
-  } => {
-    if (poly.length < 2) {
-      return { point: p, distanceM: Infinity, index: 0 };
-    }
-
-    const n = poly.length;
-    const hint = Math.max(0, Math.min(n - 2, indexHint || 0));
-    const useFullScan = n <= 120;
-    const window = 50;
-    const start = useFullScan ? 0 : Math.max(0, hint - window);
-    const end = useFullScan ? n - 2 : Math.min(n - 2, hint + window);
-
-    let bestDistance = Number.POSITIVE_INFINITY;
-    let bestPoint = p;
-    let bestIndex = hint;
-
-    for (let i = start; i <= end; i++) {
-      const res = closestPointOnSegmentMeters(p, poly[i], poly[i + 1]);
-      if (res.distanceM < bestDistance) {
-        bestDistance = res.distanceM;
-        bestPoint = res.point;
-        bestIndex = i;
+      const ab2 = bx * bx + by * by;
+      if (ab2 < 1e-6) {
+        const d = Math.hypot(px, py);
+        return { point: a, distanceM: d };
       }
-    }
 
-    return { point: bestPoint, distanceM: bestDistance, index: bestIndex };
-  };
+      let t = (px * bx + py * by) / ab2;
+      t = Math.max(0, Math.min(1, t));
+
+      const projX = t * bx;
+      const projY = t * by;
+      const projLat = originLat + projY / metersPerDegLat;
+      const projLng = originLng + projX / metersPerDegLng;
+      const dist = Math.hypot(px - projX, py - projY);
+
+      return {
+        point: { latitude: projLat, longitude: projLng },
+        distanceM: dist,
+      };
+    },
+    [],
+  );
+
+  const closestPointOnPolylineMeters = useCallback(
+    (
+      p: { latitude: number; longitude: number },
+      poly: { latitude: number; longitude: number }[],
+      indexHint: number,
+    ): {
+      point: { latitude: number; longitude: number };
+      distanceM: number;
+      index: number;
+    } => {
+      if (poly.length < 2) {
+        return { point: p, distanceM: Infinity, index: 0 };
+      }
+
+      const n = poly.length;
+      const hint = Math.max(0, Math.min(n - 2, indexHint || 0));
+      const useFullScan = n <= 120;
+      const window = 50;
+      const start = useFullScan ? 0 : Math.max(0, hint - window);
+      const end = useFullScan ? n - 2 : Math.min(n - 2, hint + window);
+
+      let bestDistance = Number.POSITIVE_INFINITY;
+      let bestPoint = p;
+      let bestIndex = hint;
+
+      for (let i = start; i <= end; i++) {
+        const res = closestPointOnSegmentMeters(p, poly[i], poly[i + 1]);
+        if (res.distanceM < bestDistance) {
+          bestDistance = res.distanceM;
+          bestPoint = res.point;
+          bestIndex = i;
+        }
+      }
+
+      return { point: bestPoint, distanceM: bestDistance, index: bestIndex };
+    },
+    [closestPointOnSegmentMeters],
+  );
+
+  const computeRemainingRouteMeters = useCallback(
+    (p: { latitude: number; longitude: number }): number | null => {
+      const poly = routeCoordinatesRef.current;
+      const cumulative = routePolylineCumulativeMetersRef.current;
+      if (poly.length < 2 || cumulative.length !== poly.length) return null;
+
+      const res = closestPointOnPolylineMeters(
+        p,
+        poly,
+        lastClosestRouteIndexRef.current,
+      );
+      lastClosestRouteIndexRef.current = res.index;
+
+      const total = routePolylineTotalMetersRef.current;
+      if (!total || total <= 0) return null;
+
+      const segStart = poly[res.index];
+      const along =
+        cumulative[res.index] + distanceMetersBetween(segStart, res.point);
+      const remaining = Math.max(0, total - along);
+      return remaining;
+    },
+    [closestPointOnPolylineMeters, distanceMetersBetween],
+  );
+
+  // Dynamic ETA: update during navigation based on remaining route distance + real speed.
+  // This mimics Google Maps behavior (31 → 30 → 29 min as you progress).
+  useEffect(() => {
+    if (!isNavigating || appState !== "active") return;
+
+    const id = setInterval(() => {
+      const loc = userLocationRef.current;
+      if (!loc) return;
+
+      const remainingM = computeRemainingRouteMeters({
+        latitude: loc.latitude,
+        longitude: loc.longitude,
+      });
+      if (remainingM == null) return;
+
+      const speedMpsRaw = loc.speed ?? 0;
+      const speedMps =
+        Number.isFinite(speedMpsRaw) && speedMpsRaw > 0 ? speedMpsRaw : 0;
+
+      let etaSeconds: number | null = null;
+      if (speedMps >= 1.5) {
+        etaSeconds = remainingM / speedMps;
+      } else if (routeTotalDurationSecRef.current > 0) {
+        const totalM = routePolylineTotalMetersRef.current;
+        if (totalM > 1) {
+          etaSeconds = routeTotalDurationSecRef.current * (remainingM / totalM);
+        }
+      }
+
+      if (etaSeconds == null || !Number.isFinite(etaSeconds)) return;
+      const minutes = Math.max(1, Math.round(etaSeconds / 60));
+      if (lastDynamicEtaMinutesRef.current === minutes) return;
+      lastDynamicEtaMinutesRef.current = minutes;
+      setEta(formatEtaFromSeconds(minutes * 60));
+    }, 1000);
+
+    return () => clearInterval(id);
+  }, [
+    isNavigating,
+    appState,
+    computeRemainingRouteMeters,
+    formatEtaFromSeconds,
+  ]);
 
   // STAGE 4.1: Smooth heading interpolation with frame-based updates
   useEffect(() => {
@@ -1248,6 +1390,9 @@ export default function MapScreen() {
               (mode === "animate0" || mode === "animate160") &&
               mapAny?.animateCamera
             ) {
+              // Prevent overlapping animations (native map cancels/retargets, causing jitter).
+              navCameraHoldUntilRef.current =
+                now + Math.max(0, animateDuration) + 30;
               mapAny.animateCamera(
                 {
                   center: curNow.center,
@@ -1547,6 +1692,7 @@ export default function MapScreen() {
         applyTurnByTurnUiFromIndex(0);
       }
       setEta(cached.eta);
+      routeTotalDurationSecRef.current = cached.totalDurationSec || 0;
       return;
     }
 
@@ -1649,16 +1795,15 @@ export default function MapScreen() {
         });
         currentStepIndex.current = 0;
 
+        routeTotalDurationSecRef.current = totalDuration;
+
         // Set initial instruction
         if (navigationSteps.current.length > 0) {
           applyTurnByTurnUiFromIndex(0);
         }
 
         // Calculate total ETA
-        const hours = Math.floor(totalDuration / 3600);
-        const minutes = Math.floor((totalDuration % 3600) / 60);
-        const computedEta =
-          hours > 0 ? `${hours}h ${minutes}m` : `${minutes} min`;
+        const computedEta = formatEtaFromSeconds(totalDuration);
         setEta(computedEta);
 
         // Cache result to avoid repeated calls for near-identical origin
@@ -1667,6 +1812,7 @@ export default function MapScreen() {
           points,
           steps: navigationSteps.current,
           eta: computedEta,
+          totalDurationSec: totalDuration,
         });
 
         // Fit map to route (skip during navigation recalc to avoid camera jumps)
@@ -2630,6 +2776,8 @@ export default function MapScreen() {
     setNextManeuver(null);
     setDistanceToNextTurn(0);
     setEta("");
+    routeTotalDurationSecRef.current = 0;
+    lastDynamicEtaMinutesRef.current = null;
   };
 
   const onStopsDragEnd = async (data: typeof stops) => {

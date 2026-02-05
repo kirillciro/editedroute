@@ -1,4 +1,5 @@
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import Constants from "expo-constants";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import * as Location from "expo-location";
 import { router } from "expo-router";
@@ -36,6 +37,21 @@ export default function MapScreen() {
   const mapRef = useRef<MapView>(null);
   const searchRef = useRef<any>(null);
   const insets = useSafeAreaInsets();
+
+  const googleMapsApiKey =
+    process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ||
+    (Platform.OS === "ios"
+      ? // Prefer the native iOS config key (also ends up as GMSApiKey in Info.plist)
+        ((Constants.expoConfig as any)?.ios?.config?.googleMapsApiKey as
+          | string
+          | undefined)
+      : ((Constants.expoConfig as any)?.android?.config?.googleMaps?.apiKey as
+          | string
+          | undefined)) ||
+    ((Constants.expoConfig as any)?.extra?.googleMapsApiKey as
+      | string
+      | undefined) ||
+    "";
   const [mapReady, setMapReady] = useState(false);
   const [userLocation, setUserLocation] = useState<{
     latitude: number;
@@ -192,6 +208,9 @@ export default function MapScreen() {
     holdMs: number;
     speedMps: number;
     distToTurnM: number;
+    remainingRouteM: number | null;
+    etaSeconds: number | null;
+    etaSource: string;
     zoomTarget: number;
     bearingTarget: number;
     pitchTarget: number;
@@ -236,6 +255,9 @@ export default function MapScreen() {
         holdMs: Math.max(0, navCameraHoldUntilRef.current - now),
         speedMps: navSpeedRef.current || userLocationRef.current?.speed || 0,
         distToTurnM: distanceToNextTurnRef.current || 0,
+        remainingRouteM: dynamicRemainingRouteMetersRef.current,
+        etaSeconds: dynamicEtaSecondsRef.current,
+        etaSource: dynamicEtaSourceRef.current,
         zoomTarget: cameraZoomRef.current || 0,
         bearingTarget: cameraBearingRef.current || 0,
         pitchTarget: cameraPitchRef.current || 0,
@@ -544,6 +566,10 @@ export default function MapScreen() {
   const routePolylineCumulativeMetersRef = useRef<number[]>([]);
   const routePolylineTotalMetersRef = useRef<number>(0);
   const lastDynamicEtaMinutesRef = useRef<number | null>(null);
+  type DynamicEtaSource = "speed" | "ratio" | "none";
+  const dynamicEtaSecondsRef = useRef<number | null>(null);
+  const dynamicRemainingRouteMetersRef = useRef<number | null>(null);
+  const dynamicEtaSourceRef = useRef<DynamicEtaSource>("none");
   const directionsCacheRef = useRef<
     Map<
       string,
@@ -1092,7 +1118,12 @@ export default function MapScreen() {
   // Dynamic ETA: update during navigation based on remaining route distance + real speed.
   // This mimics Google Maps behavior (31 → 30 → 29 min as you progress).
   useEffect(() => {
-    if (!isNavigating || appState !== "active") return;
+    if (!isNavigating || appState !== "active") {
+      dynamicEtaSecondsRef.current = null;
+      dynamicRemainingRouteMetersRef.current = null;
+      dynamicEtaSourceRef.current = "none";
+      return;
+    }
 
     const id = setInterval(() => {
       const loc = userLocationRef.current;
@@ -1102,7 +1133,12 @@ export default function MapScreen() {
         latitude: loc.latitude,
         longitude: loc.longitude,
       });
-      if (remainingM == null) return;
+      dynamicRemainingRouteMetersRef.current = remainingM;
+      if (remainingM == null) {
+        dynamicEtaSecondsRef.current = null;
+        dynamicEtaSourceRef.current = "none";
+        return;
+      }
 
       const speedMpsRaw = loc.speed ?? 0;
       const speedMps =
@@ -1111,14 +1147,20 @@ export default function MapScreen() {
       let etaSeconds: number | null = null;
       if (speedMps >= 1.5) {
         etaSeconds = remainingM / speedMps;
+        dynamicEtaSourceRef.current = "speed";
       } else if (routeTotalDurationSecRef.current > 0) {
         const totalM = routePolylineTotalMetersRef.current;
         if (totalM > 1) {
           etaSeconds = routeTotalDurationSecRef.current * (remainingM / totalM);
+          dynamicEtaSourceRef.current = "ratio";
         }
       }
 
-      if (etaSeconds == null || !Number.isFinite(etaSeconds)) return;
+      dynamicEtaSecondsRef.current = etaSeconds;
+      if (etaSeconds == null || !Number.isFinite(etaSeconds)) {
+        dynamicEtaSourceRef.current = "none";
+        return;
+      }
       const minutes = Math.max(1, Math.round(etaSeconds / 60));
       if (lastDynamicEtaMinutesRef.current === minutes) return;
       lastDynamicEtaMinutesRef.current = minutes;
@@ -1641,6 +1683,16 @@ export default function MapScreen() {
       fit?: boolean;
     },
   ) => {
+    if (!googleMapsApiKey) {
+      if (!options?.silent) {
+        Alert.alert(
+          "Missing Google Maps API Key",
+          "The app is missing a Google Maps API key, so directions cannot be fetched. Set EXPO_PUBLIC_GOOGLE_MAPS_API_KEY or configure ios.config.googleMapsApiKey / android.config.googleMaps.apiKey in app.json.",
+        );
+      }
+      return;
+    }
+
     const originCoords = options?.origin ?? userLocation;
     if (!originCoords) {
       // STAGE 9.2: Handle missing location gracefully
@@ -1721,7 +1773,7 @@ export default function MapScreen() {
         waypointsParam = `&waypoints=optimize:true|${waypoints}`;
       }
 
-      const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${destination}${waypointsParam}&key=${process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY}`;
+      const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${destination}${waypointsParam}&key=${googleMapsApiKey}`;
 
       // STAGE 9.2: Add timeout to prevent hanging
       const controller = new AbortController();
@@ -2925,7 +2977,7 @@ export default function MapScreen() {
             fetchDetails={true}
             onPress={handlePlaceSelect}
             query={{
-              key: process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY,
+              key: googleMapsApiKey,
               language: "en",
               location: userLocation
                 ? `${userLocation.latitude},${userLocation.longitude}`
@@ -3136,6 +3188,20 @@ export default function MapScreen() {
                 nav:{cameraDebugSnapshot.navViewMode} | v:
                 {(cameraDebugSnapshot.speedMps * 3.6).toFixed(0)} km/h | d:
                 {Math.round(cameraDebugSnapshot.distToTurnM)}m
+              </Text>
+              <Text style={styles.cameraDebugLine}>
+                rem:
+                {cameraDebugSnapshot.remainingRouteM != null
+                  ? `${(cameraDebugSnapshot.remainingRouteM / 1000).toFixed(1)}km`
+                  : "—"}
+                {" | "}
+                eta:
+                {cameraDebugSnapshot.etaSeconds != null
+                  ? `${Math.max(0, Math.round(cameraDebugSnapshot.etaSeconds / 60))}m`
+                  : "—"}
+                {cameraDebugSnapshot.etaSource
+                  ? ` (${cameraDebugSnapshot.etaSource})`
+                  : ""}
               </Text>
               <Text style={styles.cameraDebugLine}>
                 tgt z:{cameraDebugSnapshot.zoomTarget.toFixed(2)} h:

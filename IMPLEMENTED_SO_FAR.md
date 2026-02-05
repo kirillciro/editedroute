@@ -97,7 +97,90 @@ The panel shows live camera/target/applied values and exposes quick A/B controls
 
 This enables “Google-level feel” tuning on a physical device without rebuilding.
 
+### New debug readouts (for ETA testing)
+
+Inside the Camera Debug panel, there is now a line like:
+
+`rem: 12.3km | eta: 29m (speed)`
+
+Meaning:
+
+- `rem` = estimated remaining route distance along the current route polyline.
+- `eta` = the dynamic ETA computed from `rem`.
+- `(speed)` = ETA computed from your real GPS speed (best when moving).
+- `(ratio)` = fallback ETA computed by scaling the initial route duration by your remaining-distance ratio (useful when GPS speed is zero/noisy).
+
 ### Why `auto + snappy` usually feels best
+
+Problem you saw:
+
+- After a few minutes of driving without touching the screen, iOS/Android will dim and eventually lock the display (normal OS behavior).
+
+Fix:
+
+- We enable keep-awake only while navigation is active, using `expo-keep-awake`.
+- The app calls `activateKeepAwakeAsync("EditedRouteNavigation")` when `isNavigating && appState === "active"`.
+- It calls `deactivateKeepAwake(...)` when navigation stops or the app backgrounds.
+
+Why this is the correct approach:
+
+- It avoids burning battery all the time; it only blocks sleep during turn-by-turn.
+- It keeps behavior consistent across Debug/Release/TestFlight builds.
+
+Problem you saw:
+
+- ETA was calculated once (from Directions response) and stayed constant (e.g., always “31 min”), even though you were progressing.
+
+What we implemented:
+
+- ETA now updates every second during navigation.
+- It estimates remaining route distance along the decoded route polyline, then converts that into remaining time.
+
+### How remaining distance is computed
+
+1. When `routeCoordinates` is set, we precompute a cumulative-distance array:
+
+- `cumulative[i]` = total meters from the start of the polyline to point `i`.
+- This makes “distance remaining” fast at runtime.
+
+2. Each second during navigation:
+
+- Take the current user location.
+- Find the closest point on the route polyline (windowed search around the last best index for speed).
+- Compute `alongMeters = cumulative[index] + distance(segmentStart -> closestPoint)`.
+- Compute `remainingMeters = totalMeters - alongMeters`.
+
+### How ETA is computed
+
+Each update tick chooses the best available source:
+
+- **Speed-based (preferred while moving)**
+  - If `speedMps >= 1.5`, compute `etaSeconds = remainingMeters / speedMps`.
+  - This makes ETA react to your real pace (traffic, faster/slower driving).
+
+- **Ratio fallback (useful if GPS speed is unreliable)**
+  - If speed is too low/noisy but we have `routeTotalDurationSec`, compute:
+    - `etaSeconds = routeTotalDurationSec * (remainingMeters / totalMeters)`
+  - This keeps ETA decreasing even if the device reports `speed=0` momentarily.
+
+We only update the visible ETA when the rounded minute value changes, so the UI doesn’t flicker.
+
+### Why this matches Google Maps behavior
+
+Google’s ETA is fundamentally “remaining time”, not “original duration”. As you progress, remaining distance drops; if your speed stays similar, remaining time drops too.
+
+We’re doing the same shape of computation locally:
+
+- remaining distance from polyline progress
+- divided by speed (or a stable fallback)
+
+## What Else To Test (quick checklist)
+
+- **ETA countdown**: verify it decreases 1 minute at a time.
+- **Stoplights / low speed**: confirm it switches between `(speed)` and `(ratio)` without wild jumps.
+- **Off-route**: intentionally deviate and confirm ETA/route recalculation stays stable and doesn’t spam Directions.
+- **Background/resume**: lock/unlock; navigation should resume without huge camera jumps.
+- **Apply modes**: compare `auto+snappy` vs `animate160` now that overlap is prevented.
 
 Your result makes sense with how `react-native-maps` camera APIs behave:
 

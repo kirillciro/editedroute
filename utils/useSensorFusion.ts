@@ -56,7 +56,6 @@ export function useSensorFusion(): SensorFusionResult {
   const calculateMagnetometerHeading = (
     x: number,
     y: number,
-    z: number,
   ): number => {
     // Convert to compass heading (0° = North, 90° = East)
     let heading = Math.atan2(y, x) * (180 / Math.PI);
@@ -107,7 +106,6 @@ export function useSensorFusion(): SensorFusionResult {
       const magneticHeading = calculateMagnetometerHeading(
         data.x,
         data.y,
-        data.z,
       );
       setCompassHeading(magneticHeading);
 

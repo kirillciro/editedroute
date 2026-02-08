@@ -1,13 +1,7 @@
-import * as Location from "expo-location";
-import { router } from "expo-router";
-import { Gyroscope, Magnetometer } from "expo-sensors";
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, AppState, Keyboard, View } from "react-native";
-import type {
-  GooglePlaceData,
-  GooglePlaceDetail,
-} from "react-native-google-places-autocomplete";
-import MapView, { AnimatedRegion } from "react-native-maps";
+import { useStopsAndDestinationActions } from "@/features/map/hooks/useStopsAndDestinationActions";
+import React, { useCallback, useRef, useState } from "react";
+import { AppState, View } from "react-native";
+import MapView from "react-native-maps";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { MapCanvas } from "@/components/map/MapCanvas";
@@ -26,14 +20,20 @@ import {
 } from "@/features/map/hooks/useCameraDebugSnapshot";
 import { useCameraDebugUi } from "@/features/map/hooks/useCameraDebugUi";
 import { useCameraTuningPreset } from "@/features/map/hooks/useCameraTuningPreset";
+import { useCenterMapOnUserOnMount } from "@/features/map/hooks/useCenterMapOnUserOnMount";
 import { useDynamicCameraPitch } from "@/features/map/hooks/useDynamicCameraPitch";
 import { useDynamicEta } from "@/features/map/hooks/useDynamicEta";
+import { useEnterNavigationCameraFix } from "@/features/map/hooks/useEnterNavigationCameraFix";
 import { useGoogleMapsApiKey } from "@/features/map/hooks/useGoogleMapsApiKey";
 import { useMapLayers } from "@/features/map/hooks/useMapLayers";
+import { useMapOverlayActions } from "@/features/map/hooks/useMapOverlayActions";
 import { useMyLocationAction } from "@/features/map/hooks/useMyLocationAction";
 import { useNavCameraActions } from "@/features/map/hooks/useNavCameraActions";
 import { useNavCameraFollowLoop } from "@/features/map/hooks/useNavCameraFollowLoop";
 import { useNavigationKeepAwake } from "@/features/map/hooks/useNavigationKeepAwake";
+import { useNavigationLifecycle } from "@/features/map/hooks/useNavigationLifecycle";
+import { useNavigationRefs } from "@/features/map/hooks/useNavigationRefs";
+import { useNavigationRuntimeRefs } from "@/features/map/hooks/useNavigationRuntimeRefs";
 import { useNavigationZoomSmoothing } from "@/features/map/hooks/useNavigationZoomSmoothing";
 import { useNavMarkerSmoothingLoop } from "@/features/map/hooks/useNavMarkerSmoothingLoop";
 import { useNavViewMode } from "@/features/map/hooks/useNavViewMode";
@@ -43,41 +43,29 @@ import { useRoutePlanning } from "@/features/map/hooks/useRoutePlanning";
 import { useRoutePolylineMetrics } from "@/features/map/hooks/useRoutePolylineMetrics";
 import { useSmoothedHeadingInterpolation } from "@/features/map/hooks/useSmoothedHeadingInterpolation";
 import { useSyncedRef } from "@/features/map/hooks/useSyncedRef";
-import type { GoogleDirectionsStep } from "@/types/googleDirections";
 import type { MapDestination, MapStop, UserLocation } from "@/types/mapRoute";
 import {
   closestPointOnPolylineMeters as closestPointOnPolylineMetersFn,
   distanceMetersBetween as distanceMetersBetweenFn,
 } from "@/utils/geo/geometry";
-import { centerMapOnUserOnce } from "@/utils/location/centerOnUserOnce";
-import {
-  computeNavLookAheadMeters,
-  offsetCoordinate,
-} from "@/utils/navigation/camera";
 
-import type { DynamicEtaSource } from "@/utils/navigation/eta";
-import { startHeadingTracking } from "@/utils/navigation/headingTracking";
+import { useTurnByTurnUi } from "@/features/map/hooks/useTurnByTurnUi";
 import type { LaneHint } from "@/utils/navigation/instructions";
-import { applyMapCamera } from "@/utils/navigation/mapCameraApply";
-import { cleanupNavigationResources } from "@/utils/navigation/navCleanup";
-import {
-  pickNavBaseCoordinate,
-  userLocationToLatLng,
-} from "@/utils/navigation/navCoordinate";
-import { startAdaptiveNavGpsWatch } from "@/utils/navigation/navGpsWatch";
-import { runInitialNavCameraFixes } from "@/utils/navigation/navInitialCameraFix";
-import {
-  computeNavLocationUpdate,
-  type NavLocationUpdateOutcome,
-} from "@/utils/navigation/navLocationUpdate";
-import { seedNavAndCamera } from "@/utils/navigation/navSeed";
-
-import { computeTurnByTurnUiFromSteps } from "@/utils/navigation/turnByTurnUi";
+// nav location update logic is handled inside useNavigationLifecycle
 
 /**
  * Google Maps-style main screen
  * Stage 6: Full navigation with turn-by-turn, speed limits, highway guidance
  */
+
+// Stage 1: Static map center (Toronto for now)
+const INITIAL_REGION = {
+  latitude: 43.6532,
+  longitude: -79.3832,
+  latitudeDelta: 0.01,
+  longitudeDelta: 0.01,
+};
+
 export default function MapScreen() {
   const mapRef = useRef<MapView>(null);
   const searchRef = useRef<any>(null);
@@ -145,6 +133,33 @@ export default function MapScreen() {
   const [cameraDebugSnapshot, setCameraDebugSnapshot] =
     useState<CameraDebugSnapshot | null>(null);
 
+  const {
+    onPressDebug,
+    onCloseCameraDebug,
+    onCycleApplyMode,
+    onCycleTuningPreset,
+    onToggleTraffic,
+    onToggleBuildings,
+    onToggleIndoors,
+    onToggleCompass,
+    onToggleStopsPanel,
+    onCloseStopsPanel,
+    onOpenStats,
+  } = useMapOverlayActions({
+    cameraDebugUnlocked,
+    unlockCameraDebug,
+    setShowCameraDebug,
+    cameraApplyMode,
+    setCameraApplyMode,
+    cameraTuningPreset,
+    setCameraTuningPreset,
+    setShowsTraffic,
+    setShowsBuildings,
+    setShowsIndoors,
+    setShowsCompass,
+    setShowStopsPanel,
+  });
+
   // Google-like navigation camera modes:
   // - follow: camera follows marker + heading
   // - free: user explored the map, camera stops following until recenter
@@ -164,27 +179,57 @@ export default function MapScreen() {
   useAppStateTracking({ appState, setAppState });
   const [distance, setDistance] = useState(0);
   const [duration, setDuration] = useState(0);
-  const navigationSteps = useRef<GoogleDirectionsStep[]>([]);
-  const currentStepIndex = useRef(0);
-  const locationSubscription = useRef<Location.LocationSubscription | null>(
-    null,
-  );
-  const headingSubscription = useRef<Location.LocationSubscription | null>(
-    null,
-  );
-  const gyroSubscription = useRef<{ remove: () => void } | null>(null);
-  const magnetometerSubscription = useRef<{ remove: () => void } | null>(null);
-  const durationInterval = useRef<ReturnType<typeof setInterval> | null>(null);
-  const routePoints = useRef<
-    { latitude: number; longitude: number; timestamp: number }[]
-  >([]);
-  const currentHeading = useRef(0);
-  const calibrationSamples = useRef<number[]>([]);
-  const isCalibrated = useRef(false);
 
-  // Camera follow needs live values inside an animation loop (refs), because
-  // navCurrent is updated via RAF without triggering React renders.
-  const navCameraRafIdRef = useRef<number | null>(null);
+  const {
+    navigationSteps,
+    currentStepIndex,
+    locationSubscription,
+    headingSubscription,
+    gyroSubscription,
+    magnetometerSubscription,
+    durationInterval,
+    routePoints,
+    currentHeading,
+    calibrationSamples,
+    isCalibrated,
+  } = useNavigationRuntimeRefs();
+
+  const {
+    navCameraRafIdRef,
+    navTarget,
+    navCurrent,
+    navSpeedRef,
+    navLatestSpeedMpsRef,
+    navRafId,
+    navLastFrameTime,
+    navMarkerRegion,
+    navGpsTierRef,
+    navLastGpsResubAtRef,
+    navGpsResubInFlightRef,
+    navGpsTierIntervalRef,
+    navCameraHoldUntilRef,
+    navCameraCurrentRef,
+    navCameraLastFrameAtRef,
+    navCameraLastApplyAtRef,
+    navLastCameraCenterRef,
+    navLastCameraBearingAppliedRef,
+    navLastCameraPitchAppliedRef,
+    navLastCameraZoomAppliedRef,
+    pendingNavCameraFixRef,
+    didApplyNavCameraFixRef,
+    lastClosestRouteIndexRef,
+    navSnapActiveRef,
+    offRouteSinceRef,
+    lastRouteRecalcAtRef,
+    routeRecalcInFlightRef,
+    routeTotalDurationSecRef,
+    routePolylineCumulativeMetersRef,
+    routePolylineTotalMetersRef,
+    lastDynamicEtaMinutesRef,
+    dynamicEtaSecondsRef,
+    dynamicRemainingRouteMetersRef,
+    dynamicEtaSourceRef,
+  } = useNavigationRefs();
   const cameraBearingRef = useSyncedRef(cameraBearing, 0);
   const cameraPitchRef = useSyncedRef(cameraPitch, 0);
   const cameraZoomRef = useSyncedRef(cameraZoom, 0);
@@ -192,75 +237,17 @@ export default function MapScreen() {
   const userLocationRef = useSyncedRef<UserLocation | null>(userLocation, null);
   const distanceToNextTurnRef = useSyncedRef(distanceToNextTurn, 0);
 
-  const applyTurnByTurnUiFromIndex = (idx: number) => {
-    const ui = computeTurnByTurnUiFromSteps({
-      steps: navigationSteps.current,
-      index: idx,
-    });
-    if (!ui) return;
+  const { applyTurnByTurnUiFromIndex } = useTurnByTurnUi({
+    stepsRef: navigationSteps,
+    setCurrentInstruction,
+    setCurrentManeuver,
+    setNextInstruction,
+    setNextManeuver,
+    setLaneHint,
+    setDistanceToNextTurn,
+  });
 
-    setCurrentInstruction(ui.currentInstruction);
-    setCurrentManeuver(ui.currentManeuver);
-    setLaneHint(ui.laneHint);
-    if (ui.distanceToNextTurnMeters != null) {
-      setDistanceToNextTurn(ui.distanceToNextTurnMeters);
-    }
-    setNextInstruction(ui.nextInstruction);
-    setNextManeuver(ui.nextManeuver);
-  };
-
-  // Google-style smoothing for the navigation marker:
-  // GPS updates set a target, and a 60fps render loop smoothly moves the marker.
-  const navTarget = useRef<{ latitude: number; longitude: number } | null>(
-    null,
-  );
-  const navCurrent = useRef<{ latitude: number; longitude: number } | null>(
-    null,
-  );
-  const navSpeedRef = useRef<number>(0);
-  const navLatestSpeedMpsRef = useRef<number>(0);
-  const navRafId = useRef<number | null>(null);
-  const navLastFrameTime = useRef<number>(0);
-  const navMarkerRegion = useRef<AnimatedRegion | null>(null);
-
-  // Adaptive GPS cadence for navigation (Google-like): update less when stopped,
-  // more when moving, while UI stays smooth via RAF interpolation.
-  const navGpsTierRef = useRef<0 | 1 | 2>(1);
-  const navLastGpsResubAtRef = useRef<number>(0);
-  const navGpsResubInFlightRef = useRef<boolean>(false);
-  const navGpsTierIntervalRef = useRef<ReturnType<typeof setInterval> | null>(
-    null,
-  );
-
-  // Navigation camera smoothing: avoid overlapping animations and micro-jitter.
-  const navCameraHoldUntilRef = useRef<number>(0);
-  const navCameraCurrentRef = useRef<{
-    center: { latitude: number; longitude: number };
-    heading: number;
-    pitch: number;
-    zoom: number;
-  } | null>(null);
-  const navCameraLastFrameAtRef = useRef<number>(0);
-  const navCameraLastApplyAtRef = useRef<number>(0);
-  const navLastCameraCenterRef = useRef<{
-    latitude: number;
-    longitude: number;
-  } | null>(null);
-  const navLastCameraBearingAppliedRef = useRef<number>(0);
-  const navLastCameraPitchAppliedRef = useRef<number>(0);
-  const navLastCameraZoomAppliedRef = useRef<number>(17.2);
-
-  // Directions API call guards (reduce quota burn when "off route")
-  const offRouteSinceRef = useRef<number | null>(null);
-  const lastRouteRecalcAtRef = useRef<number>(0);
-  const routeRecalcInFlightRef = useRef<boolean>(false);
-  const routeTotalDurationSecRef = useRef<number>(0);
-  const routePolylineCumulativeMetersRef = useRef<number[]>([]);
-  const routePolylineTotalMetersRef = useRef<number>(0);
-  const lastDynamicEtaMinutesRef = useRef<number | null>(null);
-  const dynamicEtaSecondsRef = useRef<number | null>(null);
-  const dynamicRemainingRouteMetersRef = useRef<number | null>(null);
-  const dynamicEtaSourceRef = useRef<DynamicEtaSource>("none");
+  // (navigation + route refs extracted into useNavigationRefs)
 
   useCameraDebugSnapshot({
     enabled: cameraDebugUnlocked && showCameraDebug,
@@ -322,13 +309,7 @@ export default function MapScreen() {
     setUserLocation,
   });
 
-  // Ensure we can apply an immediate "enter navigation" camera move even if the map isn't ready yet.
-  const pendingNavCameraFixRef = useRef<{
-    latitude: number;
-    longitude: number;
-    speedMps: number;
-  } | null>(null);
-  const didApplyNavCameraFixRef = useRef(false);
+  // (enter-navigation camera refs extracted into useNavigationRefs)
 
   const { requestNavRecenter, requestNavOverview } = useNavCameraActions({
     mapRef,
@@ -352,9 +333,7 @@ export default function MapScreen() {
     resetZoom: 16.8,
   });
 
-  // Map-matching ("Google-like" feel)
-  const lastClosestRouteIndexRef = useRef<number>(0);
-  const navSnapActiveRef = useRef<boolean>(false);
+  // (map-matching refs extracted into useNavigationRefs)
 
   const NAV_RENDER_TAU_SECONDS = 0.12; // lower = snappier, higher = smoother
 
@@ -368,67 +347,25 @@ export default function MapScreen() {
     lastClosestRouteIndexRef,
   });
 
-  useEffect(() => {
-    if (!isNavigating || !mapReady || !mapRef.current) return;
-    if (didApplyNavCameraFixRef.current) return;
-    const pending = pendingNavCameraFixRef.current;
-    if (!pending) return;
-
-    const lookAheadCenter = offsetCoordinate(
-      { latitude: pending.latitude, longitude: pending.longitude },
-      cameraBearing || smoothedHeading,
-      computeNavLookAheadMeters(
-        pending.speedMps,
-        distanceToNextTurnRef.current,
-      ),
-    );
-
-    const durationMs = 650;
-
-    // Hold the follow loop while this animation plays to prevent camera fights.
-    navCameraHoldUntilRef.current = Date.now() + durationMs + 150;
-
-    const bearing = cameraBearing || smoothedHeading;
-    const zoom = cameraZoomRef.current || 17.2;
-
-    // Google Maps-style: animate a single CameraPosition (center + bearing + tilt + zoom).
-    applyMapCamera({
-      mapAny: mapRef.current as any,
-      mode: cameraApplyModeRef.current,
-      camera: {
-        center: lookAheadCenter,
-        heading: bearing,
-        pitch: 45,
-        zoom,
-      },
-      durationMs,
-      nowMs: Date.now(),
-    });
-
-    // Seed last-known applied state so the follow loop doesn't immediately "snap back".
-    navLastCameraCenterRef.current = lookAheadCenter;
-    navLastCameraBearingAppliedRef.current = bearing;
-    navLastCameraPitchAppliedRef.current = 45;
-    navLastCameraZoomAppliedRef.current = zoom;
-    navCameraCurrentRef.current = {
-      center: lookAheadCenter,
-      heading: bearing,
-      pitch: 45,
-      zoom,
-    };
-    navCameraLastFrameAtRef.current = 0;
-
-    didApplyNavCameraFixRef.current = true;
-    pendingNavCameraFixRef.current = null;
-  }, [
+  useEnterNavigationCameraFix({
     isNavigating,
     mapReady,
+    mapRef,
+    didApplyNavCameraFixRef,
+    pendingNavCameraFixRef,
+    navCameraHoldUntilRef,
+    navCameraCurrentRef,
+    navCameraLastFrameAtRef,
+    navLastCameraCenterRef,
+    navLastCameraBearingAppliedRef,
+    navLastCameraPitchAppliedRef,
+    navLastCameraZoomAppliedRef,
     cameraBearing,
     smoothedHeading,
     cameraZoomRef,
     distanceToNextTurnRef,
     cameraApplyModeRef,
-  ]);
+  });
 
   useNavMarkerSmoothingLoop({
     isNavigating,
@@ -443,18 +380,87 @@ export default function MapScreen() {
     tauSeconds: NAV_RENDER_TAU_SECONDS,
   });
 
-  // Stage 1: Static map center (Toronto for now)
-  const initialRegion = {
-    latitude: 43.6532,
-    longitude: -79.3832,
-    latitudeDelta: 0.01,
-    longitudeDelta: 0.01,
-  };
+  useCenterMapOnUserOnMount({ mapRef, setUserLocation });
 
   const closestPointOnPolylineMeters = useCallback(
     closestPointOnPolylineMetersFn,
     [],
   );
+
+  const { handleStartNavigation } = useNavigationLifecycle({
+    mapRef,
+    mapReady,
+    isNavigating,
+    setIsNavigating,
+    stops,
+    currentStopIndex,
+    setCurrentStopIndex,
+    isInArrivalZone,
+    setIsInArrivalZone,
+    distance,
+    duration,
+    setDistance,
+    setDuration,
+    setIsSensorsActive,
+    setNavViewModeImmediate,
+    setCurrentManeuver,
+    setNextInstruction,
+    setNextManeuver,
+    setUserLocation,
+    userLocationRef,
+    cameraBearing,
+    smoothedHeading,
+    setCameraZoom,
+    navTargetRef: navTarget,
+    navCurrentRef: navCurrent,
+    navMarkerRegionRef: navMarkerRegion,
+    navSpeedRef,
+    navLatestSpeedMpsRef,
+    distanceToNextTurnRef,
+    cameraZoomRef,
+    cameraApplyModeRef,
+    navCameraHoldUntilRef,
+    navLastCameraCenterRef,
+    navLastCameraBearingAppliedRef,
+    navLastCameraPitchAppliedRef,
+    navLastCameraZoomAppliedRef,
+    navCameraCurrentRef,
+    navCameraLastFrameAtRef,
+    didApplyNavCameraFixRef,
+    pendingNavCameraFixRef,
+    locationSubscriptionRef: locationSubscription,
+    headingSubscriptionRef: headingSubscription,
+    gyroSubscriptionRef: gyroSubscription,
+    magnetometerSubscriptionRef: magnetometerSubscription,
+    durationIntervalRef: durationInterval,
+    navGpsTierRef,
+    navLastGpsResubAtRef,
+    navGpsResubInFlightRef,
+    navGpsTierIntervalRef,
+    currentHeadingRef: currentHeading,
+    calibrationSamplesRef: calibrationSamples,
+    isCalibratedRef: isCalibrated,
+    setRawHeading,
+    setHeading,
+    destinationRef,
+    routeCoordinatesRef,
+    routePointsRef: routePoints,
+    closestPointOnPolylineMeters,
+    lastClosestRouteIndexRef,
+    navSnapActiveRef,
+    offRouteSinceRef,
+    routeRecalcInFlightRef,
+    lastRouteRecalcAtRef,
+    calculateRoute,
+    applyTurnByTurnUiFromIndex,
+    navigationStepsRef: navigationSteps,
+    currentStepIndexRef: currentStepIndex,
+    setDistanceToNextTurn,
+    distanceMetersBetween,
+    logDev: __DEV__
+      ? (message, error) => console.log(`${message}:`, error)
+      : undefined,
+  });
 
   const { computeRemainingRouteMeters } = useRemainingRouteMeters({
     routeCoordinatesRef,
@@ -532,433 +538,38 @@ export default function MapScreen() {
     cameraApplyModeRef,
   });
 
-  // Auto-center on user's current location when map loads
-  useEffect(() => {
-    centerMapOnUserOnce({
-      map: mapRef.current,
-      setUserLocation,
-      accuracy: Location.Accuracy.Balanced,
-      regionDelta: { latitudeDelta: 0.01, longitudeDelta: 0.01 },
-      animateMs: 1000,
-    });
-  }, []); // Run once on mount
-
-  const stopNavigation = async () => {
-    // Stop navigation
-    try {
-      cleanupNavigationResources({
-        locationSubscription,
-        navGpsTierIntervalRef,
-        navGpsResubInFlightRef,
-        headingSubscription,
-        gyroSubscription,
-        magnetometerSubscription,
-        durationInterval,
-      });
-
-      setIsNavigating(false);
-      setIsSensorsActive(false);
-      setNavViewModeImmediate("follow");
-      setCurrentManeuver(null);
-      setNextInstruction("");
-      setNextManeuver(null);
-
-      Alert.alert(
-        "Navigation Stopped",
-        `Distance: ${distance.toFixed(2)} km\nDuration: ${Math.floor(duration / 60)}m ${duration % 60}s`,
-      );
-    } catch (error) {
-      console.error("Error stopping navigation:", error);
-    }
-  };
-
-  const startNavigation = async () => {
-    // Start navigation - auto-start ALL features
-    try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== "granted") {
-        Alert.alert("Permission Denied", "Location permission required");
-        return;
-      }
-
-      // Flip into navigation mode immediately (UI + marker smoothing loop can start now)
-      didApplyNavCameraFixRef.current = false;
-      pendingNavCameraFixRef.current = null;
-      setNavViewModeImmediate("follow");
-      setIsNavigating(true);
-      setCurrentStopIndex(stops.length > 0 ? 0 : -1);
-      setIsInArrivalZone(false);
-
-      // Set initial navigation zoom LEVEL (Google-like).
-      setCameraZoom(17.2);
-
-      // Immediately move camera into navigation view (like pressing the location button)
-      // Prefer cached/last-known location first so we don't block on GPS.
-      const seed = (
-        coords: { latitude: number; longitude: number },
-        speedMps: number,
-        durationMs: number,
-      ) => {
-        seedNavAndCamera({
-          coords,
-          speedMps,
-          durationMs,
-          setUserLocation,
-          navSpeedRef,
-          navLatestSpeedMpsRef,
-          navTargetRef: navTarget,
-          navCurrentRef: navCurrent,
-          navMarkerRegionRef: navMarkerRegion,
-          cameraBearing,
-          smoothedHeading,
-          distanceToNextTurnMeters: distanceToNextTurnRef.current,
-          mapReady,
-          mapRefCurrent: mapRef.current,
-          cameraZoom: cameraZoomRef.current || 17.2,
-          cameraApplyMode: cameraApplyModeRef.current,
-          navCameraHoldUntilRef,
-          navLastCameraCenterRef,
-          navLastCameraBearingAppliedRef,
-          navLastCameraPitchAppliedRef,
-          navLastCameraZoomAppliedRef,
-          navCameraCurrentRef,
-          navCameraLastFrameAtRef,
-          didApplyNavCameraFixRef,
-          pendingNavCameraFixRef,
-        });
-      };
-
-      await runInitialNavCameraFixes({
-        Location,
-        seed,
-        didApplyNavCameraFix: () => didApplyNavCameraFixRef.current,
-        getExistingBase: () =>
-          pickNavBaseCoordinate({
-            navCurrent: navCurrent.current,
-            navTarget: navTarget.current,
-            userLocation: userLocationRef.current,
-          }),
-        getExistingSpeedMps: () =>
-          navSpeedRef.current || userLocationRef.current?.speed || 0,
-        getCurrentUserLocation: () =>
-          userLocationToLatLng(userLocationRef.current),
-        distanceMetersBetween,
-        onSeedWithoutResnap: (coords, speedMps) => {
-          setUserLocation({
-            latitude: coords.latitude,
-            longitude: coords.longitude,
-            speed: speedMps,
-          });
-          navSpeedRef.current = speedMps;
-          navLatestSpeedMpsRef.current = speedMps;
-          navTarget.current = {
-            latitude: coords.latitude,
-            longitude: coords.longitude,
-          };
-          if (!navCurrent.current) {
-            navCurrent.current = {
-              latitude: coords.latitude,
-              longitude: coords.longitude,
-            };
-          }
-        },
-        logDev: __DEV__
-          ? (message, error) => console.log(`${message}:`, error)
-          : undefined,
-      });
-
-      const ensureNavMarkerInitialized = (coords: {
-        latitude: number;
-        longitude: number;
-      }) => {
-        if (!navCurrent.current) {
-          navCurrent.current = {
-            latitude: coords.latitude,
-            longitude: coords.longitude,
-          };
-        }
-        if (!navMarkerRegion.current) {
-          navMarkerRegion.current = new AnimatedRegion({
-            latitude: coords.latitude,
-            longitude: coords.longitude,
-            latitudeDelta: 0.0038,
-            longitudeDelta: 0.0038,
-          });
-        }
-      };
-
-      const maybeRecalculateOffRoute = async (params: {
-        shouldRecalculate: boolean;
-        destination: MapDestination | null;
-        distanceToRouteMeters: number;
-        origin: { latitude: number; longitude: number };
-        nowMs: number;
-      }) => {
-        const {
-          shouldRecalculate,
-          destination,
-          distanceToRouteMeters,
-          origin,
-          nowMs,
-        } = params;
-        if (!shouldRecalculate || !destination) return;
-
-        routeRecalcInFlightRef.current = true;
-        lastRouteRecalcAtRef.current = nowMs;
-
-        if (__DEV__)
-          console.log(
-            `Off route by ${distanceToRouteMeters.toFixed(0)}m - recalculating (throttled)...`,
-          );
-        try {
-          await calculateRoute(destination.latitude, destination.longitude, 0, {
-            origin,
-            silent: true,
-            fit: false,
-          });
-        } catch (error) {
-          console.error("Error recalculating route:", error);
-        } finally {
-          routeRecalcInFlightRef.current = false;
-        }
-      };
-
-      const applyProgressSideEffects = (
-        progress: NavLocationUpdateOutcome["progress"],
-      ) => {
-        // STAGE 5.1: Check if we've arrived at current stop (auto-advance)
-        if (progress.nextStopIndex != null) {
-          const arrivedIdx = Math.max(0, progress.nextStopIndex - 1);
-          const arrivedStop = stops[arrivedIdx];
-          if (__DEV__ && arrivedStop?.address) {
-            console.log(`Arrived at stop: ${arrivedStop.address}`);
-          }
-          setCurrentStopIndex(progress.nextStopIndex);
-        }
-
-        // STAGE 5.2: Arrival zone detection for final destination
-        if (progress.enterArrivalZone) {
-          if (__DEV__) console.log("Entering arrival zone (< 20m)");
-          setIsInArrivalZone(true);
-        }
-
-        // Update distance to next turn + step progression
-        if (progress.distanceToNextTurnMeters != null) {
-          setDistanceToNextTurn(progress.distanceToNextTurnMeters);
-        }
-        if (progress.nextStepIndex != null) {
-          currentStepIndex.current = progress.nextStepIndex;
-          if (currentStepIndex.current < navigationSteps.current.length) {
-            applyTurnByTurnUiFromIndex(currentStepIndex.current);
-          }
-        }
-      };
-
-      const applyNavLocationBasics = (coords: {
-        latitude: number;
-        longitude: number;
-        speedMps: number;
-      }) => {
-        navLatestSpeedMpsRef.current = coords.speedMps;
-        setUserLocation({
-          latitude: coords.latitude,
-          longitude: coords.longitude,
-          speed: coords.speedMps,
-        });
-
-        // Update target position for smooth marker rendering
-        navSpeedRef.current = coords.speedMps;
-      };
-
-      const onNavLocationUpdate = async (location: Location.LocationObject) => {
-        const { latitude, longitude, speed } = location.coords;
-        const speedMps = speed || 0;
-
-        applyNavLocationBasics({ latitude, longitude, speedMps });
-
-        const destNow = destinationRef.current;
-        const routeNow = routeCoordinatesRef.current;
-        const now = Date.now();
-
-        const outcome = computeNavLocationUpdate({
-          latitude,
-          longitude,
-          speedMps,
-          routePoints: routeNow,
-          closestPointOnPolylineMeters,
-          lastClosestRouteIndex: lastClosestRouteIndexRef.current,
-          wasSnapActive: navSnapActiveRef.current,
-          nowMs: now,
-          destination: destNow,
-          offRouteSinceMs: offRouteSinceRef.current,
-          isRecalcInFlight: routeRecalcInFlightRef.current,
-          lastRecalcAtMs: lastRouteRecalcAtRef.current,
-          stops,
-          currentStopIndex,
-          isInArrivalZone,
-          navigationSteps: navigationSteps.current,
-          currentStepIndex: currentStepIndex.current,
-        });
-
-        if (outcome.didComputeClosestPoint) {
-          lastClosestRouteIndexRef.current = outcome.nextClosestRouteIndex;
-        }
-        if (outcome.didUpdateSnapActive) {
-          navSnapActiveRef.current = outcome.nextSnapActive;
-        }
-        navTarget.current = outcome.target;
-
-        ensureNavMarkerInitialized({ latitude, longitude });
-
-        offRouteSinceRef.current = outcome.offRoute.nextOffRouteSinceMs;
-        if (!outcome.offRoute.shouldConsider) {
-          offRouteSinceRef.current = null;
-        }
-
-        await maybeRecalculateOffRoute({
-          shouldRecalculate: outcome.offRoute.shouldRecalculate,
-          destination: destNow,
-          distanceToRouteMeters: outcome.distanceToRouteMeters,
-          origin: { latitude, longitude },
-          nowMs: now,
-        });
-
-        applyProgressSideEffects(outcome.progress);
-
-        // Camera updates are driven by the dedicated follow loop (smooth + bottom-pinned).
-      };
-
-      await startAdaptiveNavGpsWatch({
-        Location,
-        onNavLocationUpdate,
-        locationSubscriptionRef: locationSubscription,
-        navGpsResubInFlightRef,
-        navGpsTierRef,
-        navLastGpsResubAtRef,
-        navGpsTierIntervalRef,
-        navLatestSpeedMpsRef,
-        initialSpeedMps: navSpeedRef.current || 0,
-      });
-
-      await startHeadingTracking({
-        Location,
-        Gyroscope,
-        Magnetometer,
-        currentHeadingRef: currentHeading,
-        calibrationSamplesRef: calibrationSamples,
-        isCalibratedRef: isCalibrated,
-        setRawHeading,
-        setHeading,
-        setIsSensorsActive,
-        headingSubscriptionRef: headingSubscription,
-        gyroSubscriptionRef: gyroSubscription,
-        magnetometerSubscriptionRef: magnetometerSubscription,
-      });
-
-      // Start recording
-      routePoints.current = [];
-      setDistance(0);
-      setDuration(0);
-      const startTime = Date.now();
-      durationInterval.current = setInterval(() => {
-        const elapsed = Math.floor((Date.now() - startTime) / 1000);
-        setDuration(elapsed);
-      }, 1000);
-    } catch (error) {
-      console.error("Error starting navigation:", error);
-      Alert.alert("Error", "Failed to start navigation");
-      setIsNavigating(false);
-    }
-  };
-
-  const handleStartNavigation = async () => {
-    if (isNavigating) {
-      await stopNavigation();
-      return;
-    }
-
-    await startNavigation();
-  };
-
-  const handlePlaceSelect = async (
-    data: GooglePlaceData,
-    details: GooglePlaceDetail | null,
-  ) => {
-    const ll = getLatLngFromPlaceDetails(details);
-    if (ll) {
-      const { lat, lng } = ll;
-      const description = getPlaceDescription(data);
-
-      // If no destination yet, set it as destination
-      if (!destination) {
-        setDestination({
-          latitude: lat,
-          longitude: lng,
-          address: description,
-        });
-      } else {
-        // Add as a stop before the destination
-        const newStop = {
-          id: Date.now().toString(),
-          latitude: lat,
-          longitude: lng,
-          address: description,
-        };
-        setStops((prev) => [...prev, newStop]);
-      }
-
-      // Clear search input
-      searchRef.current?.setAddressText("");
-
-      // Get current location first if not available
-      if (!userLocation) {
-        await handleMyLocation();
-      }
-
-      // Fetch route
-      await calculateRoute(lat, lng);
-    }
-    Keyboard.dismiss();
-  };
-
-  const handleRemoveStop = async (stopId: string) => {
-    const updatedStops = stops.filter((stop) => stop.id !== stopId);
-    setStops(updatedStops);
-    setCurrentStopIndex(updatedStops.length > 0 && isNavigating ? 0 : -1); // STAGE 5.1: Reset stop index
-
-    await recalculateRouteToDestinationIfPresent(destinationRef);
-  };
-
-  // STAGE 5.1: Manual advance to next stop
-  const handleNextStop = () => {
-    if (stops.length > 0 && currentStopIndex < stops.length) {
-      const nextIndex = currentStopIndex === -1 ? 0 : currentStopIndex + 1;
-      setCurrentStopIndex(nextIndex);
-      if (__DEV__)
-        console.log(
-          `Manually advanced to stop ${nextIndex + 1}/${stops.length}`,
-        );
-    }
-  };
-
-  const handleRemoveDestination = () => {
-    resetRouteState();
-  };
-
-  const onStopsDragEnd = async (data: typeof stops) => {
-    setStops(data);
-    setCurrentStopIndex(data.length > 0 && isNavigating ? 0 : -1); // STAGE 5.1: Reset to first stop
-
-    // Recalculate route with new order
-    await recalculateRouteToDestinationIfPresent(destinationRef);
-  };
+  const {
+    handlePlaceSelect,
+    handleRemoveStop,
+    handleNextStop,
+    handleRemoveDestination,
+    onStopsDragEnd,
+  } = useStopsAndDestinationActions({
+    destination,
+    setDestination,
+    stops,
+    setStops,
+    isNavigating,
+    currentStopIndex,
+    setCurrentStopIndex,
+    userLocation,
+    handleMyLocation,
+    calculateRoute,
+    recalculateRouteToDestinationIfPresent,
+    destinationRef,
+    resetRouteState,
+    searchRef,
+    getLatLngFromPlaceDetails,
+    getPlaceDescription,
+    logDev: __DEV__ ? (msg) => console.log(msg) : undefined,
+  });
 
   return (
     <View style={styles.container}>
       {/* Map - renders immediately like Google Maps */}
       <MapCanvas
         mapRef={mapRef}
-        initialRegion={initialRegion}
+        initialRegion={INITIAL_REGION}
         mapType={mapType}
         showsTraffic={showsTraffic}
         showsBuildings={showsBuildings}
@@ -985,59 +596,36 @@ export default function MapScreen() {
         isNavigating={isNavigating}
         onPlaceSelect={handlePlaceSelect}
         cameraDebugUnlocked={cameraDebugUnlocked}
-        onPressDebug={() => {
-          if (!cameraDebugUnlocked) {
-            unlockCameraDebug();
-            return;
-          }
-          setShowCameraDebug((v) => !v);
-        }}
+        onPressDebug={onPressDebug}
         onLongPressUnlockDebug={unlockCameraDebug}
         mapType={mapType}
         onCycleMapType={cycleMapType}
         showsTraffic={showsTraffic}
-        onToggleTraffic={() => setShowsTraffic((v) => !v)}
+        onToggleTraffic={onToggleTraffic}
         showsBuildings={showsBuildings}
-        onToggleBuildings={() => setShowsBuildings((v) => !v)}
+        onToggleBuildings={onToggleBuildings}
         showsIndoors={showsIndoors}
-        onToggleIndoors={() => setShowsIndoors((v) => !v)}
+        onToggleIndoors={onToggleIndoors}
         showsCompass={showsCompass}
-        onToggleCompass={() => setShowsCompass((v) => !v)}
+        onToggleCompass={onToggleCompass}
         routeHasCoordinates={routeCoordinates.length > 1}
         navViewMode={navViewMode}
         onRequestOverview={requestNavOverview}
         onRequestRecenter={requestNavRecenter}
         destination={destination}
         stops={stops}
-        onToggleStopsPanel={() => setShowStopsPanel((v) => !v)}
-        onOpenStats={() => router.push("/(main)/stats")}
+        onToggleStopsPanel={onToggleStopsPanel}
+        onOpenStats={onOpenStats}
         onMyLocation={handleMyLocation}
         showCameraDebug={showCameraDebug}
         cameraApplyMode={cameraApplyMode}
         cameraTuningPreset={cameraTuningPreset}
         cameraDebugSnapshot={cameraDebugSnapshot}
-        onCloseCameraDebug={() => setShowCameraDebug(false)}
-        onCycleApplyMode={() => {
-          const order: (typeof cameraApplyMode)[] = [
-            "auto",
-            "setCamera",
-            "animate0",
-            "animate160",
-          ];
-          const idx = Math.max(0, order.indexOf(cameraApplyMode));
-          setCameraApplyMode(order[(idx + 1) % order.length]);
-        }}
-        onCycleTuningPreset={() => {
-          const order: (typeof cameraTuningPreset)[] = [
-            "balanced",
-            "smooth",
-            "snappy",
-          ];
-          const idx = Math.max(0, order.indexOf(cameraTuningPreset));
-          setCameraTuningPreset(order[(idx + 1) % order.length]);
-        }}
+        onCloseCameraDebug={onCloseCameraDebug}
+        onCycleApplyMode={onCycleApplyMode}
+        onCycleTuningPreset={onCycleTuningPreset}
         showStopsPanel={showStopsPanel}
-        onCloseStopsPanel={() => setShowStopsPanel(false)}
+        onCloseStopsPanel={onCloseStopsPanel}
         onStopsDragEnd={onStopsDragEnd}
         onRemoveStop={handleRemoveStop}
         onRemoveDestination={handleRemoveDestination}

@@ -7,4 +7,14 @@ module.exports = defineConfig([
   {
     ignores: ['dist/*'],
   },
+  // Fix: eslint-plugin-import rules (like import/namespace) need a TS parser
+  // to parse imported TypeScript modules correctly under flat config.
+  {
+    files: ['**/*.{ts,tsx}'],
+    settings: {
+      'import/parsers': {
+        '@typescript-eslint/parser': ['.ts', '.tsx'],
+      },
+    },
+  },
 ]);

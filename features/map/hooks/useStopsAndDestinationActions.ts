@@ -40,12 +40,13 @@ type Params = {
 
   resetRouteState: () => void;
 
-  searchRef: React.MutableRefObject<{ setAddressText?: (text: string) => void } | null>;
+  searchRef: React.MutableRefObject<{
+    setAddressText?: (text: string) => void;
+  } | null>;
 
-  getLatLngFromPlaceDetails: (details: GooglePlaceDetail | null) =>
-    | { lat: number; lng: number }
-    | null
-    | undefined;
+  getLatLngFromPlaceDetails: (
+    details: GooglePlaceDetail | null,
+  ) => { lat: number; lng: number } | null | undefined;
   getPlaceDescription: (data: GooglePlaceData) => string;
 
   logDev?: (msg: string) => void;

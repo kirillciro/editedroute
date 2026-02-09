@@ -35,11 +35,5 @@ export function useCameraBearingSmoothing({
     }, 50); // 20 FPS for camera (smoother, less battery intensive)
 
     return () => clearInterval(intervalId);
-  }, [
-    smoothedHeading,
-    isNavigating,
-    userSpeedMps,
-    appState,
-    setCameraBearing,
-  ]);
+  }, [smoothedHeading, isNavigating, userSpeedMps, appState, setCameraBearing]);
 }

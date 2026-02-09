@@ -1,7 +1,10 @@
 import { useEffect } from "react";
 
 import { computeCameraPitchTargetDeg } from "@/utils/navigation/cameraPitch";
-import { applyScalarEasing, PITCH_EASING_FACTOR } from "@/utils/navigation/cameraSmoothing";
+import {
+  applyScalarEasing,
+  PITCH_EASING_FACTOR,
+} from "@/utils/navigation/cameraSmoothing";
 
 type Params = {
   isNavigating: boolean;

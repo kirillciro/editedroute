@@ -1,5 +1,5 @@
-import { useEffect } from "react";
 import type React from "react";
+import { useEffect } from "react";
 import type MapView from "react-native-maps";
 
 import type { CameraApplyMode } from "@/types/mapUi";
@@ -33,9 +33,10 @@ type Params = {
   navCameraHoldUntilRef: React.MutableRefObject<number>;
   navCameraCurrentRef: React.MutableRefObject<NavCameraState | null>;
   navCameraLastFrameAtRef: React.MutableRefObject<number>;
-  navLastCameraCenterRef: React.MutableRefObject<
-    { latitude: number; longitude: number } | null
-  >;
+  navLastCameraCenterRef: React.MutableRefObject<{
+    latitude: number;
+    longitude: number;
+  } | null>;
   navLastCameraBearingAppliedRef: React.MutableRefObject<number>;
   navLastCameraPitchAppliedRef: React.MutableRefObject<number>;
   navLastCameraZoomAppliedRef: React.MutableRefObject<number>;
@@ -77,7 +78,10 @@ export function useEnterNavigationCameraFix({
     const lookAheadCenter = offsetCoordinate(
       { latitude: pending.latitude, longitude: pending.longitude },
       bearing,
-      computeNavLookAheadMeters(pending.speedMps, distanceToNextTurnRef.current),
+      computeNavLookAheadMeters(
+        pending.speedMps,
+        distanceToNextTurnRef.current,
+      ),
     );
 
     const durationMs = 650;

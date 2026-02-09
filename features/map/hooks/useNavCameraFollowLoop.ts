@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 
-import { pickNavBaseCoordinate } from "@/utils/navigation/navCoordinate";
+import type { CameraApplyMode } from "@/types/mapUi";
 import { applyMapCamera } from "@/utils/navigation/mapCameraApply";
 import {
   computeNavCameraApplyDecision,
@@ -8,7 +8,7 @@ import {
 } from "@/utils/navigation/navCameraLoop";
 import { smoothNavCameraPosition } from "@/utils/navigation/navCameraSmoothing";
 import { computeNavCameraTargets } from "@/utils/navigation/navCameraTargets";
-import type { CameraApplyMode } from "@/types/mapUi";
+import { pickNavBaseCoordinate } from "@/utils/navigation/navCoordinate";
 
 type LatLng = { latitude: number; longitude: number };
 
@@ -155,8 +155,8 @@ export function useNavCameraFollowLoop({
           ? 0
           : navSpeedRef.current || userLocationRef.current?.speed || 0;
 
-        const { centerTarget, pitchTarget, zoomTarget } = computeNavCameraTargets(
-          {
+        const { centerTarget, pitchTarget, zoomTarget } =
+          computeNavCameraTargets({
             base,
             bearingDeg: bearingTarget,
             speedMps,
@@ -164,8 +164,7 @@ export function useNavCameraFollowLoop({
             inArrival: !!inArrival,
             cameraPitchDeg: cameraPitchRef.current,
             cameraZoom: cameraZoomRef.current || 17.2,
-          },
-        );
+          });
 
         const frame = computeNavCameraDtSeconds({
           nowMs: now,

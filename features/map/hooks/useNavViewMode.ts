@@ -15,5 +15,10 @@ export function useNavViewMode(initial: NavViewMode = "follow") {
     setNavViewMode(mode);
   }, []);
 
-  return { navViewMode, setNavViewMode, navViewModeRef, setNavViewModeImmediate };
+  return {
+    navViewMode,
+    setNavViewMode,
+    navViewModeRef,
+    setNavViewModeImmediate,
+  };
 }

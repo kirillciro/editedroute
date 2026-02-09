@@ -81,7 +81,10 @@ export function useDynamicEta({
       });
       dynamicEtaSecondsRef.current = computed.etaSeconds;
       dynamicEtaSourceRef.current = computed.source;
-      if (computed.etaSeconds == null || !Number.isFinite(computed.etaSeconds)) {
+      if (
+        computed.etaSeconds == null ||
+        !Number.isFinite(computed.etaSeconds)
+      ) {
         dynamicEtaSourceRef.current = "none";
         return;
       }

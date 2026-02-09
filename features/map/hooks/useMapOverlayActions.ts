@@ -1,5 +1,5 @@
-import { useCallback } from "react";
 import { router } from "expo-router";
+import { useCallback } from "react";
 
 type Params = {
   cameraDebugUnlocked: boolean;
@@ -62,7 +62,11 @@ export function useMapOverlayActions({
   }, [cameraApplyMode, setCameraApplyMode]);
 
   const onCycleTuningPreset = useCallback(() => {
-    const order: (typeof cameraTuningPreset)[] = ["balanced", "smooth", "snappy"];
+    const order: (typeof cameraTuningPreset)[] = [
+      "balanced",
+      "smooth",
+      "snappy",
+    ];
     const idx = Math.max(0, order.indexOf(cameraTuningPreset));
     setCameraTuningPreset(order[(idx + 1) % order.length]);
   }, [cameraTuningPreset, setCameraTuningPreset]);

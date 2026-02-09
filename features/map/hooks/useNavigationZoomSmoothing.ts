@@ -1,6 +1,9 @@
 import { useEffect } from "react";
 
-import { applyScalarEasing, ZOOM_EASING_FACTOR } from "@/utils/navigation/cameraSmoothing";
+import {
+  applyScalarEasing,
+  ZOOM_EASING_FACTOR,
+} from "@/utils/navigation/cameraSmoothing";
 import { computeNavZoomTarget } from "@/utils/navigation/zoom";
 
 type Params = {

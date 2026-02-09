@@ -8,6 +8,7 @@ import { AnimatedRegion } from "react-native-maps";
 import type { GoogleDirectionsStep } from "@/types/googleDirections";
 import type { MapDestination, MapStop, UserLocation } from "@/types/mapRoute";
 import type { CameraApplyMode } from "@/types/mapUi";
+import { startHeadingTracking } from "@/utils/navigation/headingTracking";
 import { cleanupNavigationResources } from "@/utils/navigation/navCleanup";
 import {
   pickNavBaseCoordinate,
@@ -20,7 +21,6 @@ import {
   type NavLocationUpdateOutcome,
 } from "@/utils/navigation/navLocationUpdate";
 import { seedNavAndCamera } from "@/utils/navigation/navSeed";
-import { startHeadingTracking } from "@/utils/navigation/headingTracking";
 
 type LatLng = { latitude: number; longitude: number };
 
@@ -77,18 +77,19 @@ type Params = {
   navLastCameraBearingAppliedRef: Ref<number>;
   navLastCameraPitchAppliedRef: Ref<number>;
   navLastCameraZoomAppliedRef: Ref<number>;
-  navCameraCurrentRef: Ref<
-    | {
-        center: LatLng;
-        heading: number;
-        pitch: number;
-        zoom: number;
-      }
-    | null
-  >;
+  navCameraCurrentRef: Ref<{
+    center: LatLng;
+    heading: number;
+    pitch: number;
+    zoom: number;
+  } | null>;
   navCameraLastFrameAtRef: Ref<number>;
   didApplyNavCameraFixRef: Ref<boolean>;
-  pendingNavCameraFixRef: Ref<{ latitude: number; longitude: number; speedMps: number } | null>;
+  pendingNavCameraFixRef: Ref<{
+    latitude: number;
+    longitude: number;
+    speedMps: number;
+  } | null>;
 
   // subscriptions/intervals
   locationSubscriptionRef: Ref<Location.LocationSubscription | null>;
@@ -114,7 +115,9 @@ type Params = {
   destinationRef: Ref<MapDestination | null>;
   routeCoordinatesRef: Ref<LatLng[]>;
 
-  routePointsRef: Ref<{ latitude: number; longitude: number; timestamp: number }[]>;
+  routePointsRef: Ref<
+    { latitude: number; longitude: number; timestamp: number }[]
+  >;
 
   closestPointOnPolylineMeters: (
     p: LatLng,
@@ -328,7 +331,8 @@ export function useNavigationLifecycle({
           }),
         getExistingSpeedMps: () =>
           navSpeedRef.current || userLocationRef.current?.speed || 0,
-        getCurrentUserLocation: () => userLocationToLatLng(userLocationRef.current),
+        getCurrentUserLocation: () =>
+          userLocationToLatLng(userLocationRef.current),
         distanceMetersBetween,
         onSeedWithoutResnap: (coords, speedMps) => {
           setUserLocation({

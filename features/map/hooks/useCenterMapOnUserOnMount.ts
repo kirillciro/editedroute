@@ -1,7 +1,7 @@
-import { useEffect } from "react";
-import type React from "react";
-import type MapView from "react-native-maps";
 import * as Location from "expo-location";
+import type React from "react";
+import { useEffect } from "react";
+import type MapView from "react-native-maps";
 
 import type { UserLocation } from "@/types/mapRoute";
 import { centerMapOnUserOnce } from "@/utils/location/centerOnUserOnce";

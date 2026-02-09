@@ -16,14 +16,11 @@ type Params = {
   userLocationRef: React.MutableRefObject<(Coord & { speed?: number }) | null>;
   navSpeedRef: React.MutableRefObject<number>;
 
-  pendingNavCameraFixRef: React.MutableRefObject<
-    | {
-        latitude: number;
-        longitude: number;
-        speedMps: number;
-      }
-    | null
-  >;
+  pendingNavCameraFixRef: React.MutableRefObject<{
+    latitude: number;
+    longitude: number;
+    speedMps: number;
+  } | null>;
   didApplyNavCameraFixRef: React.MutableRefObject<boolean>;
   navCameraHoldUntilRef: React.MutableRefObject<number>;
 

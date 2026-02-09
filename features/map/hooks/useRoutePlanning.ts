@@ -3,7 +3,7 @@ import { Alert } from "react-native";
 import type MapView from "react-native-maps";
 
 import type { GoogleDirectionsStep } from "@/types/googleDirections";
-import type { MapStop, UserLocation, MapDestination } from "@/types/mapRoute";
+import type { MapDestination, MapStop, UserLocation } from "@/types/mapRoute";
 import { fitMapToCoordinates } from "@/utils/navigation/mapFit";
 import { orchestrateRouteRequest } from "@/utils/navigation/routeOrchestrator";
 
@@ -125,7 +125,9 @@ export function useRoutePlanning({
       const baseUserLoc = (() => {
         if (options?.origin) return options.origin;
         const loc = userLocationRef.current ?? userLocation;
-        return loc ? { latitude: loc.latitude, longitude: loc.longitude } : null;
+        return loc
+          ? { latitude: loc.latitude, longitude: loc.longitude }
+          : null;
       })();
 
       const { outcome, pendingToRun } = await orchestrateRouteRequest({
@@ -175,7 +177,10 @@ export function useRoutePlanning({
           return;
         }
         case "cooldown_active": {
-          if (!options?.silent && nowMs - lastOverQueryAlertAtRef.current > 8000) {
+          if (
+            !options?.silent &&
+            nowMs - lastOverQueryAlertAtRef.current > 8000
+          ) {
             lastOverQueryAlertAtRef.current = nowMs;
             Alert.alert(
               "Directions Limit Reached",
@@ -208,7 +213,10 @@ export function useRoutePlanning({
           return;
         }
         case "over_query_limit": {
-          if (!options?.silent && nowMs - lastOverQueryAlertAtRef.current > 8000) {
+          if (
+            !options?.silent &&
+            nowMs - lastOverQueryAlertAtRef.current > 8000
+          ) {
             lastOverQueryAlertAtRef.current = nowMs;
             Alert.alert(
               "Directions Limit Reached",

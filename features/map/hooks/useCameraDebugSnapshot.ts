@@ -1,7 +1,12 @@
 import { useEffect } from "react";
 import type MapView from "react-native-maps";
 
-import type { MapLayerType, NavViewMode, CameraApplyMode, CameraTuningPreset } from "@/types/mapUi";
+import type {
+  CameraApplyMode,
+  CameraTuningPreset,
+  MapLayerType,
+  NavViewMode,
+} from "@/types/mapUi";
 
 export type CameraDebugSnapshot = {
   now: number;

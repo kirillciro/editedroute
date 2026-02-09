@@ -1,5 +1,5 @@
-import { useRef } from "react";
 import type * as Location from "expo-location";
+import { useRef } from "react";
 
 import type { GoogleDirectionsStep } from "@/types/googleDirections";
 
@@ -14,7 +14,9 @@ export function useNavigationRuntimeRefs() {
   const locationSubscription = useRef<Location.LocationSubscription | null>(
     null,
   );
-  const headingSubscription = useRef<Location.LocationSubscription | null>(null);
+  const headingSubscription = useRef<Location.LocationSubscription | null>(
+    null,
+  );
 
   const gyroSubscription = useRef<RemoveableSubscription | null>(null);
   const magnetometerSubscription = useRef<RemoveableSubscription | null>(null);
